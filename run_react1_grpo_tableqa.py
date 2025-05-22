@@ -16,7 +16,11 @@ import torch
 from transformers.trainer_utils import get_last_checkpoint
 from transformers import AutoTokenizer
 from datasets import load_dataset
-from trl import ReActGRPOConfig, ReActGRPOTrainer, get_peft_config, ModelConfig, TrlParser
+from trl import get_peft_config, ModelConfig, TrlParser
+from mcts_grpo_trainer import MctsGRPOTrainer
+from mcts_grpo_config import MctsGRPOConfig
+
+
 
 from utils.wikitq import wikitq_reward, load_wikitq
 from utils.feverous import feverous_reward, load_feverous
@@ -33,12 +37,8 @@ import os, torch, shutil
 ########################
 @dataclass
 class ScriptArguments:
-    train_wikitq: str = "/mnt/data/tg_hhd/hanchen/DATA-Agent_TableQA/data/wikitq/train/data.jsonl"
-    eval_wikitq: str = "/mnt/data/tg_hhd/hanchen/DATA-Agent_TableQA/data/wikitq/eval/data.jsonl"
-    train_feverous: str = "/mnt/data/tg_hhd/hanchen/DATA-Agent_TableQA/data/feverous/train/data.jsonl"
-    eval_feverous: str = "/mnt/data/tg_hhd/hanchen/DATA-Agent_TableQA/data/feverous/eval/data.jsonl"
-    train_hybridqa: str = "/mnt/data/tg_hhd/hanchen/DATA-Agent_TableQA/data/hybridqa/train/data.jsonl"
-    eval_hybridqa: str = "/mnt/data/tg_hhd/hanchen/DATA-Agent_TableQA/data/hybridqa/eval/data.jsonl"
+    train_wikitq: str = "data/wikitq/train/data.jsonl"
+    eval_wikitq: str = "data/wikitq/eval/data.jsonl"
     tokenizer_name_or_path: str = None
 
 
@@ -96,7 +96,7 @@ def format_reward_func(completions, target, **kwargs):
     return rewards
 
 
-def get_checkpoint(training_args: ReActGRPOConfig):
+def get_checkpoint(training_args: MctsGRPOConfig):
     last_checkpoint = None
     if os.path.isdir(training_args.output_dir):
         last_checkpoint = get_last_checkpoint(training_args.output_dir)
@@ -104,7 +104,7 @@ def get_checkpoint(training_args: ReActGRPOConfig):
 
 
 def grpo_function(
-    model_args: ModelConfig, script_args: ScriptArguments, training_args: ReActGRPOConfig
+    model_args: ModelConfig, script_args: ScriptArguments, training_args: MctsGRPOConfig
 ):
     #########################
     # Log parameters
@@ -143,7 +143,7 @@ def grpo_function(
     #########################   
     # Instantiate trainer
     #########################
-    trainer = ReActGRPOTrainer(
+    trainer = MctsGRPOTrainer(
       model=model_args.model_name_or_path,
       args=training_args,
       reward_funcs=[wikitq_reward],  # , feverous_reward, hybridqa_reward
@@ -199,7 +199,7 @@ def grpo_function(
 
 
 def main():
-    parser = TrlParser((ModelConfig, ScriptArguments, ReActGRPOConfig))
+    parser = TrlParser((ModelConfig, ScriptArguments, MctsGRPOConfig))
     model_args, script_args, training_args = parser.parse_args_and_config()
 
     # Run the main training loop
