@@ -308,8 +308,19 @@ class ReActGRPOTrainer(Trainer):
         agg_internal  : Callable[[List[float]], float] | None = None,
         std_method    : str = None,          # "minmax" | "zscore" | None
     ) -> List[List[dict]]:
-        if agg_leaf     is None: agg_leaf     = lambda xs: max(xs)
-        if agg_internal is None: agg_internal = lambda xs: sum(xs) / len(xs)
+        if agg_leaf     is None: agg_leaf     = lambda x: max(x)
+        if agg_internal is None: agg_internal = lambda x: sum(x) / len(x)
+
+        def format_reward_func(completions):
+            try:
+                regex = r"^<think>([^<]*(?:<(?!/?think>)[^<]*)*)<\/think>\n<answer>([\s\S]*?)<\/answer>$"
+                match = re.search(regex, completions, re.DOTALL) 
+                if match is None or len(match.groups()) != 2:
+                    return 0.5
+                else:
+                    return 1.0
+            except Exception:
+                return 0.5
 
         # ---------- 1. build adjacency ----------
         node_children, node_parent_cnt, id2step = defaultdict(set), defaultdict(int), {}
@@ -330,10 +341,9 @@ class ReActGRPOTrainer(Trainer):
             if not node_children[sid]:                       # leaf
                 outs = [f(step.get("completions", ""), ground_truth)
                         for f in reward_funcs]
-                r = agg_leaf(outs)
+                r = agg_leaf(outs) * format_reward_func(step.get("completions", ""))
             else:                                            # internal
                 r = agg_internal([dfs(cid) for cid in node_children[sid]])
-
                 step_result = step.get("results", "")
                 if step_result and "Error" not in str(step_result):
                     r *= 1.0
@@ -409,7 +419,7 @@ Evaluate the model’s answer against the human-annotated ground truth and decid
 ## Instructions
 1. Return a correctness score **between 0 and 1** (inclusive).  
 2. Think step-by-step before scoring; wrap your reasoning in `<think>…</think>` tags.  
-3. Wrap **only** the final score in `<answer>…</answer>` tags, e.g. `<answer>0.75</answer>`.  
+3. Wrap **only** the final score in `<answer>…</answer>` tags, e.g. `<answer>0.63</answer>`.  
 4. The ground-truth annotation may itself contain mistakes—use your best judgment.
 
 ## Given
@@ -448,7 +458,13 @@ Evaluate the model’s answer against the human-annotated ground truth and decid
         matches = re.findall(r'<answer>(.*?)</answer>', result)
         if matches:
             try:
-                return float(matches[-1])
+                score = float(matches[-1])
+                if 0 <= score <= 1.0:
+                    return score
+                elif score > 1.0:
+                    return 1.0
+                else:
+                    return 0.0
             except Exception as e:
                 return 0.0
         else:
