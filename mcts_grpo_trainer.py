@@ -1,17 +1,3 @@
-# Copyright 2025 The HuggingFace Team. All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 import os
 
 import textwrap
@@ -743,40 +729,3 @@ Evaluate the model’s answer against the human-annotated ground truth and decid
         else:
             super().log(logs)
         self._metrics.clear()
-
-    # def create_model_card(self, model_name: Optional[str] = None, dataset_name: Optional[str] = None, tags: Union[str, List[str], None] = None):
-    #     if not self.is_world_process_zero():
-    #         return
-
-    #     if hasattr(self.model.config, "_name_or_path") and not os.path.isdir(self.model.config._name_or_path):
-    #         base_model = self.model.config._name_or_path
-    #     else:
-    #         base_model = None
-
-    #     tags = tags or []
-    #     if isinstance(tags, str):
-    #         tags = [tags]
-
-    #     if hasattr(self.model.config, "unsloth_version"):
-    #         tags.append("unsloth")
-
-    #     citation = textwrap.dedent(
-    #     )
-
-    #     from .utils import generate_model_card, get_comet_experiment_url
-    #     model_card = generate_model_card(
-    #         base_model=base_model,
-    #         model_name=model_name,
-    #         hub_model_id=self.hub_model_id,
-    #         dataset_name=dataset_name,
-    #         tags=tags,
-    #         wandb_url=wandb.run.get_url() if is_wandb_available() and wandb.run is not None else None,
-    #         comet_url=get_comet_experiment_url(),
-    #         trainer_name="ReActGRPO",
-    #         trainer_citation=citation,
-    #         paper_title="",
-    #         paper_id="2402.03300",
-    #     )
-
-    #     model_card.save(os.path.join(self.args.output_dir, "README.md"))
-
