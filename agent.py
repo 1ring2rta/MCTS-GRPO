@@ -19,6 +19,7 @@ from transformers import (
 
 from rich.console import Console
 from rich.panel import Panel
+from rich.markup import escape
 from io import StringIO
 from pathlib import Path
 
@@ -26,10 +27,12 @@ from pathlib import Path
 def dump_with_rich(step: dict, logfile: str):
     buf = StringIO()
     console = Console(file=buf, force_terminal=True, record=False)
-    console.print(Panel(str(step["reward"]), title="REWARD"))
-    console.print(Panel(step["prompt"], title="PROMPT"))
-    console.print(Panel(step["completions"], title="COMPLETION"))
-    console.print(Panel(str(step["ground_truth"]), title="GROUND TRUTH"))
+
+    console.print(Panel(escape(str(step["reward"])), title="REWARD"))
+    console.print(Panel(escape(str(step["prompt"])), title="PROMPT"))
+    console.print(Panel(escape(str(step["completions"])), title="COMPLETION"))
+    console.print(Panel(escape(str(step["ground_truth"])), title="GROUND TRUTH"))
+
     text = buf.getvalue()
     Path(logfile).write_text(text, encoding="utf-8")
     return logfile
