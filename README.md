@@ -8,12 +8,12 @@ Exploration gets smarter when it follows the branches. 🌱
 ![Qwen2.5-7B, Trained on WikiTQ](screenshots.png)
 
 
-| Task         | Dataset       | GRPO | SearchR1 | MCTS-GRPO  |
-|--------------|---------------|------|----------|------------|
-| TableQA      | FEVEROUS      |      |          |            |
-|              | WikiTQ        |      |          |            |
-|              | HybridQA      |      |          |            |
-| Math         | GSM8K         |      |          |            |
-|              | AIME          |      |          |            |
+| Task         | Dataset       | Qwen2.5-7B-Instruct | MCTS-GRPO  |
+|--------------|---------------|---------------------|------------|
+| TableQA      | FEVEROUS      |                     |            |
+|              | WikiTQ        | 27.85%              | 44.27%     |
+|              | HybridQA      |                     |            |
+| Math         | GSM8K         |                     |            |
+|              | AIME          |                     |            |
 
 
