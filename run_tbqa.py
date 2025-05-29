@@ -15,8 +15,11 @@ import torch
 from transformers.trainer_utils import get_last_checkpoint
 from transformers import AutoTokenizer
 from datasets import load_dataset
-from trl import ReActGRPOConfig, ReActGRPOTrainer, get_peft_config, ModelConfig, TrlParser
-from trl.trainer.agent import ReActAgent
+from trl import get_peft_config, ModelConfig, TrlParser
+
+from trainer.mcts_grpo_trainer import ReActGRPOTrainer
+from trainer.mcts_grpo_config import ReActGRPOConfig
+from trainer.agent import ReActAgent
 
 from utils.wikitq import wikitq_reward, load_wikitq
 from utils.feverous import feverous_reward, load_feverous
