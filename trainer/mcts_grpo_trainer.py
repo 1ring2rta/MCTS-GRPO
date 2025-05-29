@@ -73,6 +73,7 @@ class ReActGRPOTrainer(Trainer):
     def __init__(
         self,
         model: Union[str, PreTrainedModel],
+        agent_cls: Optional[ReActAgent], 
         reward_funcs: Union[Callable, PreTrainedModel, str, List[Union[Callable, PreTrainedModel, str]]],
         args: ReActGRPOConfig,
         train_dataset: Optional[Union[Dataset, IterableDataset]] = None,
@@ -83,6 +84,7 @@ class ReActGRPOTrainer(Trainer):
         optimizers: tuple = (None, None),
         peft_config: Optional["PeftConfig"] = None,
     ):
+        self.agent_cls = agent_cls
         # Prepare the ReActGRPOConfig if needed
         if args is None:
             model_name = model if isinstance(model, str) else model.config._name_or_path
@@ -291,7 +293,7 @@ class ReActGRPOTrainer(Trainer):
         Override so we only keep the columns we use in compute_loss (which is basically 'prompt', 'answer', etc.).
         """
         if self._signature_columns is None:
-            self._signature_columns = ["question", "answer", "table_path"]
+            self._signature_columns = ["question", "answer", "support_material_path"]
 
     def _prepare_inputs(self, inputs: dict) -> dict:
         # No default tokenization/cuda move is needed from Trainer, 
@@ -311,16 +313,32 @@ class ReActGRPOTrainer(Trainer):
         if agg_leaf     is None: agg_leaf     = lambda x: max(x)
         if agg_internal is None: agg_internal = lambda x: sum(x) / len(x)
 
-        def format_reward_func(completions):
+        def format_reward_func(completions: str) -> float:
+            TAG_RE   = re.compile(r'</?think>|</?answer>')
+            CONTENT_RE = re.compile(
+                r'''\A\s*                       # 允许开头空白
+                    <think>                    # think 开始
+                    (?:(?!</?think>).)*?       # 非贪婪匹配，且禁止再次出现 think 标签
+                    </think>                   # think 结束
+                    \s*\r?\n\s*                # 一行换行，可带空白
+                    <answer>                   # answer 开始
+                    (?:(?!</?answer>).)*?      # 非贪婪匹配，且禁止再次出现 answer 标签
+                    </answer>                  # answer 结束
+                    \s*\Z                      # 允许结尾空白，确保到串尾
+                ''',
+                re.DOTALL | re.VERBOSE,
+            )
             try:
-                regex = r"^<think>([^<]*(?:<(?!/?think>)[^<]*)*)<\/think>\n<answer>([\s\S]*?)<\/answer>$"
-                match = re.search(regex, completions, re.DOTALL) 
-                if match is None or len(match.groups()) != 2:
-                    return 0.5
-                else:
-                    return 1.0
+                # 1️⃣ 结构性快速检查：标签数量与顺序必须恰好是 4 个、且按 think → answer 排列
+                if TAG_RE.findall(completions) != [
+                    '<think>', '</think>', '<answer>', '</answer>'
+                ]:
+                    return 0.1
+
+                # 2️⃣ 严格整体匹配：除空白外不允许任何多余内容
+                return 1.0 if CONTENT_RE.fullmatch(completions) else 0.1
             except Exception:
-                return 0.5
+                return 0.1
 
         # ---------- 1. build adjacency ----------
         node_children, node_parent_cnt, id2step = defaultdict(set), defaultdict(int), {}
@@ -402,73 +420,69 @@ class ReActGRPOTrainer(Trainer):
 
         return chains
     
-    def llm_self_judge(self, model_output, ground_truth):
-        matches = re.findall(r'<answer>(.*?)</answer>', model_output)
-        if matches:
-            model_output = matches[-1]
-        else:
-            return 0.0
+#     def llm_self_judge(self, model_output, ground_truth):
+#         matches = re.findall(r'<answer>(.*?)</answer>', model_output)
+#         if matches:
+#             model_output = matches[-1]
+#         else:
+#             return 0.0
 
-        given_str = "\n".join(
-            f"Var: {k}; Type: {type(v)}\n{v}" + f"\n{v.dtypes}" if isinstance(v, pd.DataFrame) else f"Var: {k}; Type: {type(v)}\n{v}" for k, v in self.given.items()
-        )
+#         prompt = f"""\
+# Evaluate the model’s answer against the human-annotated ground truth and decide how correct it is.
 
-        prompt = f"""\
-Evaluate the model’s answer against the human-annotated ground truth and decide how correct it is.
+# ## Instructions
+# 1. Return a correctness score **between 0 and 1** (inclusive).  
+# 2. Think step-by-step before scoring; wrap your reasoning in `<think>…</think>` tags.  
+# 3. Wrap **only** the final score in `<answer>…</answer>` tags, e.g. `<answer>0.63</answer>`.  
+# 4. The ground-truth annotation may itself contain mistakes—use your best judgment.
 
-## Instructions
-1. Return a correctness score **between 0 and 1** (inclusive).  
-2. Think step-by-step before scoring; wrap your reasoning in `<think>…</think>` tags.  
-3. Wrap **only** the final score in `<answer>…</answer>` tags, e.g. `<answer>0.63</answer>`.  
-4. The ground-truth annotation may itself contain mistakes—use your best judgment.
+# ## Given
+# {self.support_material_str}
 
-## Given
-{given_str}
+# ## Query
+# {self.question.split('👆')[0]}
 
-## Query
-{self.query.split('👆')[0]}
+# ## Model Output
+# {model_output}
 
-## Model Output
-{model_output}
+# ## Ground Truth
+# {ground_truth}"""
+#         msg = [{"role":"user", "content": prompt}]
+#         prompt = self.processing_class.apply_chat_template(
+#             conversation=msg, 
+#             tokenize=False, 
+#             add_generation_prompt=True
+#         )
+#         generation_result = self.llm.generate(
+#             prompts=[prompt], 
+#             sampling_params=self.sampling_params, 
+#             use_tqdm=False
+#         )
+#         output_obj = generation_result[0].outputs[0]
+#         token_ids = output_obj.token_ids
+#         if not isinstance(token_ids, list):
+#             token_ids = list(token_ids)
 
-## Ground Truth
-{ground_truth}"""
-        msg = [{"role":"user", "content": prompt}]
-        prompt = self.processing_class.apply_chat_template(
-            conversation=msg, 
-            tokenize=False, 
-            add_generation_prompt=True
-        )
-        generation_result = self.llm.generate(
-            prompts=[prompt], 
-            sampling_params=self.sampling_params, 
-            use_tqdm=False
-        )
-        output_obj = generation_result[0].outputs[0]
-        token_ids = output_obj.token_ids
-        if not isinstance(token_ids, list):
-            token_ids = list(token_ids)
+#         result = self.processing_class.decode(token_ids, skip_special_tokens=True)
 
-        result = self.processing_class.decode(token_ids, skip_special_tokens=True)
-        with open(os.path.join(self.args.output_dir,"tmp_llm_self_judge.txt"), "w") as f:
-            f.write("========================================================\n")
-            f.write(prompt)
-            f.write("========================================================\n")
-            f.write(result)
-        matches = re.findall(r'<answer>(.*?)</answer>', result)
-        if matches:
-            try:
-                score = float(matches[-1])
-                if 0 <= score <= 1.0:
-                    return score
-                elif score > 1.0:
-                    return 1.0
-                else:
-                    return 0.0
-            except Exception as e:
-                return 0.0
-        else:
-            return 0.0
+#         with open(os.path.join(self.args.output_dir,"tmp_llm_self_judge.txt"), "w") as f:
+#             f.write("="*20 + "\n"); f.write(prompt)
+#             f.write("="*20 + "\n"); f.write(result)
+        
+#         matches = re.findall(r'<answer>(.*?)</answer>', result)
+#         if matches:
+#             try:
+#                 score = float(matches[-1])
+#                 if 0 <= score <= 1.0:
+#                     return score
+#                 elif score > 1.0:
+#                     return 1.0
+#                 else:
+#                     return 0.0
+#             except Exception as e:
+#                 return 0.0
+#         else:
+#             return 0.0
 
     def _quick_eval_on_step(self, num_samples: int = 100):
         if self.eval_dataset is None or not self.accelerator.is_main_process:
@@ -493,31 +507,24 @@ Evaluate the model’s answer against the human-annotated ground truth and decid
 
         rewards = list()
         for inp in batch:
-            question, ground_truth, table_path = inp["question"], inp["answer"], inp["table_path"]
+            self.question, self.ground_truth, self.support_material_path  = inp["question"], inp["ground_truth"], inp["support_material_path"]
 
-            given = dict()
-            for i in range(len(table_path)):
-                try:
-                    given[f"df{i}"] = pd.read_csv(table_path[i])
-                except Exception as e:
-                    with open(table_path[i]) as f: given[f"tb{i}"] = f.read()
-
-            agent = ReActAgent(
-                tokenizer=self.processing_class,
-                depth=self.depth,
-                breadth=1,
-                llm=self.llm,
-                device=self.vllm_device, 
-                sampling_params=self.sampling_params,
-                output_dir=self.args.output_dir
+            agent = self.agent_cls(
+                tokenizer =       self.processing_class,
+                depth =           self.depth,
+                breadth =         1,
+                llm =             self.llm,
+                device =          self.vllm_device, 
+                sampling_params = self.sampling_params,
+                output_dir =      self.args.output_dir
             )
             last_stp = agent.react_recursive(
-                    question,
-                    given=given,
-                    ground_truth=ground_truth
+                    support_material_path = self.support_material_path,
+                    question =         self.question, 
+                    ground_truth =     self.ground_truth
                 )[0][-1]
             rewards.append(
-                max([rwf(last_stp.get("completions", ""), ground_truth) for rwf in self.reward_funcs])
+                max([rwf(last_stp.get("completions", ""), self.ground_truth) for rwf in self.reward_funcs])
             )
         if rewards:
             avg_r = float(np.mean(rewards))
@@ -555,38 +562,27 @@ Evaluate the model’s answer against the human-annotated ground truth and decid
             scored_batched_chains = []
 
             for inp in inputs:
-                question, ground_truth, table_path = (
-                    inp["question"],
-                    inp["answer"],
-                    inp["table_path"],
-                )
+                self.question, self.ground_truth, self.support_material_path  = inp["question"], inp["ground_truth"], inp["support_material_path"]
 
-                given = {}
-                for i, path in enumerate(table_path):
-                    try:
-                        given[f"df{i}"] = pd.read_csv(path)
-                    except Exception:
-                        with open(path) as f:
-                            given[f"tb{i}"] = f.read()
-                self.given = given; self.query = question
-
-                react_agent = ReActAgent(
-                    tokenizer=self.processing_class,
-                    depth=self.depth,
-                    breadth=self.breadth,
-                    llm=self.llm,
-                    device=self.vllm_device,
-                    sampling_params=self.sampling_params,
-                    output_dir=self.args.output_dir,
+                react_agent = self.agent_cls(
+                    tokenizer =       self.processing_class,
+                    depth =           self.depth,
+                    breadth =         self.breadth,
+                    llm =             self.llm,
+                    device =          self.vllm_device,
+                    sampling_params = self.sampling_params,
+                    output_dir =      self.args.output_dir,
                 )
                 expansions = react_agent.react_recursive(
-                    question, given=given, ground_truth=ground_truth
+                    support_material_path = self.support_material_path, 
+                    question =              self.question, 
+                    ground_truth =          self.ground_truth
                 )
 
                 scored_batched_chains.extend(
                     self.compute_action_rewards(
                         chains=expansions,
-                        ground_truth=ground_truth,
+                        ground_truth=self.ground_truth,
                         reward_funcs=self.reward_funcs,
                     )
                 )
