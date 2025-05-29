@@ -38,7 +38,7 @@ from ..import_utils import is_vllm_available
 from ..models import create_reference_model, prepare_deepspeed, unwrap_model_for_generation
 from .react_grpo_config import ReActGRPOConfig
 from .utils import generate_model_card, get_comet_experiment_url, pad
-from .agent import ReActAgent, dump_with_rich
+from .mcts_agent import ReActAgent, dump_with_rich
 
 if is_peft_available():
     from peft import PeftConfig, get_peft_model
