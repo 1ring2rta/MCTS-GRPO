@@ -5,7 +5,7 @@ GRPO is awesome, let’s put a tree on it! 🌲🌟
 Exploration gets smarter when it follows the branches. 🌱
 
 
-Thanks to ![Mini-R1](https://www.philschmid.de/mini-deepseek-r1), the blog set a very easy-start example.
+For a quick start, set up your environment through this:
 ```sh
 conda create --prefix /root/r1-engine python==3.11
 conda activate /root/r1-engine
