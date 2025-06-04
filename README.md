@@ -5,7 +5,7 @@ GRPO is awesome, let’s put a tree on it! 🌲🌟
 Exploration gets smarter when it follows the branches. 🌱
 
 
-![Qwen2.5-7B, Trained on WikiTQ](screenshots.png)
+![Qwen2.5-7B, Trained on WikiTQ](trainer/screenshots.png)
 
 
 | Task         | Dataset       | Qwen2.5-7B-Instruct | MCTS-GRPO  |
