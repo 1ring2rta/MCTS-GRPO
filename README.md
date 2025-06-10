@@ -30,7 +30,7 @@ pip install openpyxl
 | Task         | Dataset       | Qwen2.5-7B-Instruct | MCTS-GRPO  |
 |--------------|---------------|---------------------|------------|
 | TableQA      | FEVEROUS      |                     |            |
-|              | WikiTQ        | 27.85%              | 44.27%     |
+|              | WikiTQ        |                     |            |
 |              | HybridQA      |                     |            |
 | Math         | GSM8K         |                     |            |
 |              | AIME          |                     |            |
