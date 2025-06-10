@@ -1,0 +1,27 @@
+compute_environment: LOCAL_MACHINE
+distributed_type: DEEPSPEED
+mixed_precision: bf16
+num_machines: 1
+
+deepspeed_config:
+  bf16:
+    enabled: true
+  zero_optimization:
+    stage: 3
+    reduce_scatter: true
+    reduce_bucket_size:   16777216
+    allgather_bucket_size: 16777216
+  gradient_clipping: 1.0
+  offload_optimizer_device: none
+  offload_param_device: none
+
+downcast_bf16: 'no'
+main_training_function: main
+rdzv_backend: static
+same_network: true
+debug: false
+
+tpu_env: []
+tpu_use_cluster: false
+tpu_use_sudo: false
+use_cpu: false
