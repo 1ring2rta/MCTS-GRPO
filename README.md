@@ -3,6 +3,9 @@
 ## GRPO is awesome, let’s put a tree on it! 🌲🌟 Exploration gets smarter when it follows the branches. 🌱
 
 
+![Architecture](trainer/IMG_64541.JPEG)
+
+
 For a quick start, set up your environment through this:
 ```sh
 conda create --prefix /root/r1-engine python==3.11
