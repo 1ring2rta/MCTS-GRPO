@@ -44,16 +44,22 @@ class TableAgent(ReActAgent):
    • DO NOT include any nested `<think>` or `<answer>` tags.
 3. Inside `<tool_call>...</tool_call>`:  
    • Include only when necessary, and always place it directly after `<think>`.
+   • No more than 1 call a time.
 4. Inside `<answer>...</answer>`:  
    • Provide the final answer to the user and conclude the reasoning process.
 5. Tool call format example (must be preceded by a `<think>` block):
 <think>
 ...
 </think>
-<tool_call>
-{{"name": "...", "arguments": {{...}}}}
+<tool_call>    
+{{"name": "execute_python_code", "arguments": {{"code": "
+def func(...):
+    ...
+...
+"}}}}
 </tool_call>
-6. Please provide your final answer in {max_steps} steps. You are currently on step {current_step} of {max_steps}.
+6. Generate concise ideas and rapidly validate them through suitable computational tools.
+7. Please provide your final answer in {max_steps} steps. You are currently on step {current_step} of {max_steps}.
 
 # User Question: {question}"""
 
@@ -114,9 +120,9 @@ def grpo_function(
     ###############
     # Load datasets
     ###############
-    train_dataset = load_math('dapo-math-17k.parquet') \
+    train_dataset = load_math('dapo-math-17k_filtered.parquet') \
                       .train_test_split(test_size=0.1, seed=42)["train"]
-    test_dataset  = load_math('dapo-math-17k.parquet') \
+    test_dataset  = load_math('dapo-math-17k_filtered.parquet') \
                       .train_test_split(test_size=0.1, seed=42)["test"]
 
     #########################   
