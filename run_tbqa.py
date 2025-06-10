@@ -21,84 +21,19 @@ from trainer.mcts_grpo_trainer import ReActGRPOTrainer
 from trainer.mcts_grpo_config import ReActGRPOConfig
 from trainer.agent import ReActAgent
 
-from utils.wikitq import wikitq_reward, load_wikitq
-from utils.feverous import feverous_reward, load_feverous
-from utils.hybridqa import hybridqa_reward, load_hybridqa
+from helpers.wikitq import wikitq_reward, load_wikitq
+from helpers.feverous import feverous_reward, load_feverous
+from helpers.hybridqa import hybridqa_reward, load_hybridqa
 from datasets import concatenate_datasets
 
-from transformers import TrainerCallback
-import multiprocessing
-import os, torch, shutil
-
-
-def exe_lambda(
-    packages: str,
-    lambda_expression: str,
-    timeout: int = 10,
-    context: dict = None
-):
-    ns = {}
-    if context:
-        ns.update(context)
-    ns['__builtins__'] = __builtins__
-
-    exec(packages, ns)
-
-    URL_PAT = re.compile(r"https?://|ftp://", re.I)
-    if URL_PAT.search(lambda_expression):
-        raise RuntimeError("Network access is disabled in offline mode.")
-
-    fn = eval(lambda_expression, ns)
-
-    def _run_lambda(f, q):
-        try:
-            q.put(f())
-        except Exception as e:
-            q.put(e)
-
-    q = multiprocessing.Queue()
-    p = multiprocessing.Process(target=_run_lambda, args=(fn, q))
-    p.start()
-    p.join(timeout)
-
-    if p.is_alive():
-        p.terminate()
-        raise TimeoutError("Lambda execution timed out.")
-
-    result = q.get()
-    if isinstance(result, Exception):
-        raise result
-
-    return result
+# from tools.lambda_expression_executor import exe_lambda, description
+from tools.python_code_interpreter import execute_python_code, description
 
 
 class TableAgent(ReActAgent):
-    TOOLS = {"exe_lambda": exe_lambda}
-    TOOLS_DESCRIPTION = [
-        {
-        "type": "function",
-        "function": {
-                "name": "exe_lambda",
-                "description": "Lambda Expression Executor.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "packages": {
-                                "type": "string",
-                                "description": "Import statements needed prior to execution, e.g. 'import pandas as pd; import numpy as np'."
-                            },
-                        "lambda_expression": {
-                                "type": "string",
-                                "description": "A valid Python lambda expression with variables all from globals(), e.g. `lambda: a+b`"
-                            },
-                        },
-                    "required": [
-                        "lambda_expression"
-                    ]
-                }
-            }
-        }
-    ]
+    TOOLS = {"execute_python_code": execute_python_code}
+    TOOLS_DESCRIPTION = description
+
 
     ACTION_PROMPT_TEMPLATE = """\
 - Gather sufficient information or perform necessary verifications by invoking relevant tools.
@@ -124,15 +59,18 @@ class TableAgent(ReActAgent):
    • Provide the final answer to the user and conclude the reasoning process.
 5. Tool call format example (must be preceded by a `<think>` block):
 <think>
-I need to look up the value of the 'third' field for season 2008. I will call exe_lambda.
+...
 </think>
-<tool_call>
-{{"name": "exe_lambda", "arguments": {{"packages": "import pandas as pd", "lambda_expression": "lambda: df0[df0['season'] == 2008]['third'].values[0]"}}}}
+<tool_call>    
+{{"name": "execute_python_code", "arguments": {{"code": "
+def func(...):
+    ...
+...
+"}}}}
 </tool_call>
 6. Please provide your final answer in {max_steps} steps. You are currently on step {current_step} of {max_steps}.
 
-# User Question: {question}
-"""
+# User Question: {question}"""
 
 ########################
 # Custom dataclasses
@@ -199,13 +137,13 @@ def grpo_function(
     ###############
     train_wikitq_dataset = load_wikitq(script_args.train_wikitq)
     test_wikitq_dataset = load_wikitq(script_args.eval_wikitq)
-    # train_feverous_dataset = load_feverous(script_args.train_feverous)
-    # test_feverous_dataset = load_feverous(script_args.eval_feverous)
+    train_feverous_dataset = load_feverous(script_args.train_feverous)
+    test_feverous_dataset = load_feverous(script_args.eval_feverous)
     # train_hybridqa_dataset = load_hybridqa(script_args.train_hybridqa)
     # test_hybridqa_dataset = load_hybridqa(script_args.eval_hybridqa)
 
-    train_dataset = concatenate_datasets([train_wikitq_dataset]) # train_feverous_dataset, train_hybridqa_dataset
-    test_dataset = concatenate_datasets([test_wikitq_dataset]) # test_feverous_dataset, test_hybridqa_dataset
+    train_dataset = concatenate_datasets([train_wikitq_dataset, train_feverous_dataset]) # train_feverous_dataset, train_hybridqa_dataset
+    test_dataset = concatenate_datasets([test_wikitq_dataset, test_feverous_dataset]) # test_feverous_dataset, test_hybridqa_dataset
 
     #########################   
     # Instantiate trainer
