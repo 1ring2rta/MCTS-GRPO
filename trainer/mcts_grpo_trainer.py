@@ -57,7 +57,7 @@ import asyncio
 import random
 
 
-class ReActGRPOTrainer(Trainer):
+class MCTSGRPOTrainer(Trainer):
     """
     ReActGRPOTrainer that uses BFS-like expansions for ReAct steps, 
     then does a policy-gradient style update with reference model KL, similar to GRPO.
