@@ -19,7 +19,7 @@ from transformers import TrainingArguments
 
 
 @dataclass
-class ReActGRPOConfig(TrainingArguments):
+class MCTSGRPOConfig(TrainingArguments):
     r"""
     Configuration class for the [`GRPOTrainer`].
 
