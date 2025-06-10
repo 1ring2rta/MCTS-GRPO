@@ -2,20 +2,18 @@ import json
 import re
 import os
 import copy
-import traceback
+
 import torch
 import pandas as pd
+
 import gc
 import abc
+import traceback
 
 from typing import ClassVar, Optional, List, Dict, Any
 from vllm import LLM, SamplingParams
-from accelerate import Accelerator
 from transformers import (
-    AutoTokenizer,
-    AutoModelForCausalLM,
     PreTrainedTokenizerBase,
-    GenerationConfig,
 )
 
 from rich.console import Console
@@ -44,10 +42,11 @@ def dump_with_rich(step: dict, logfile: str):
 def parse_tool_calls(content:str):
     tool_calls = []
     offset = 0
-    for i, m in enumerate(re.finditer(r"<tool_call>\n(.+)?\n</tool_call>", content)):
+    pattern = re.compile(r"<tool_call>(.*?)</tool_call>", re.DOTALL)
+    for i, m in enumerate(pattern.finditer(content)):
         if i == 0:
             offset = m.start()
-        func = json.loads(m.group(1))
+        func = json.loads(m.group(1).strip().replace("\n", "\\n"))
         tool_calls.append({"type": "function", "function": func})
         if isinstance(func["arguments"], str):
             func["arguments"] = json.loads(func["arguments"])
@@ -83,31 +82,6 @@ class ReActAgent(abc.ABC):
         self.llm = llm
         self.device = device
         self.sampling_params = sampling_params
-        # self.tools_description = [
-        #     {
-        #     "type": "function",
-        #     "function": {
-        #             "name": "exe_lambda",
-        #             "description": "Lambda Expression Executor.",
-        #             "parameters": {
-        #                 "type": "object",
-        #                 "properties": {
-        #                     "packages": {
-        #                             "type": "string",
-        #                             "description": "Import statements needed prior to execution, e.g. 'import pandas as pd; import numpy as np'."
-        #                         },
-        #                     "lambda_expression": {
-        #                             "type": "string",
-        #                             "description": "A valid Python lambda expression with variables all from globals(), e.g. `lambda: a+b`"
-        #                         },
-        #                     },
-        #                 "required": [
-        #                     "lambda_expression"
-        #                 ]
-        #             }
-        #         }
-        #     }
-        # ]
 
     def _generate(self, messages: list[dict], ground_truth) -> dict:
         with torch.inference_mode():
@@ -128,15 +102,12 @@ class ReActAgent(abc.ABC):
             output_obj = generation_result[0].outputs[0]
             token_ids = output_obj.token_ids
 
-            # if len(token_ids) == self.sampling_params.max_tokens:
-            #     raise RuntimeError("max tokens exceeded，cut by LLM.generate.")
-
             if not isinstance(token_ids, list):
                 token_ids = list(token_ids)
             
             completions = self.tokenizer.decode(token_ids, skip_special_tokens=True)
             if len(token_ids) >= self.sampling_params.max_tokens:
-                completions += "... (max token exceeded, try to be brief)"
+                completions += "... (max tokens exceeded)"
             result = {
                 "prompt": prompt,
                 "completions": completions,
@@ -160,9 +131,9 @@ class ReActAgent(abc.ABC):
 
             support_material_str = "\n".join(
                 f"Var: {k}; Type: {type(v)}\n{v}" + f"\n{v.dtypes}" if isinstance(v, pd.DataFrame) else f"Var: {k}; Type: {type(v)}\n{v}" for k, v in support_material.items()
-        )
+            )
         else:
-            support_material, support_material_str = None, None
+            support_material, support_material_str = dict(), str()
         return support_material, support_material_str
 
     def react_recursive(
@@ -173,50 +144,14 @@ class ReActAgent(abc.ABC):
         assistant_and_tool_msg: Optional[list] = None,
         current_chain: Optional[list] = None,
         current_depth: int = 0,
+        previous_variables: dict = dict()
     ) -> list:
         support_material, support_material_str = self.support_material_read_func(support_material_path)
 
         assistant_and_tool_msg = copy.deepcopy(assistant_and_tool_msg) if assistant_and_tool_msg else []
         current_chain = current_chain if current_chain else []
 
-        current_results = {}
-        for step_resp in current_chain:
-            for i, res in enumerate(step_resp["results"]):
-                current_results[f"result_{len(current_results)}"] = res
-
         support_material_str = f"# Support Material:\n{support_material_str}" if support_material_str else ""
-#         prompt = f"""\
-# - Gather sufficient information or perform necessary verifications by invoking relevant tools.
-# - Provide comprehensive reasoning by clearly outlining your chain of thought.
-# - Conclude by presenting a definitive answer to exit the loop.
-
-
-# {support_material_str}
-
-
-# # Notice:
-# 1. Each response **MUST contain exactly one** `<think>...</think>` block.  
-#    • If tool usage is needed, it **must be immediately followed** by one `<tool_call>...</tool_call>` block.  
-#    • If the final answer is ready, it **must be immediately followed** by one `<answer>...</answer>` block.  
-#    • A single response **MUST NOT contain both** `<tool_call>` and `<answer>`.  
-#    • No additional visible content is allowed outside these tags (only whitespace is permitted).
-# 2. Inside `<think>...</think>`:  
-#    • Clearly explain your reasoning and justify your next step.  
-#    • DO NOT include any nested `<think>` or `<answer>` tags.
-# 3. Inside `<tool_call>...</tool_call>`:  
-#    • Include only when necessary, and always place it directly after `<think>`.
-# 4. Inside `<answer>...</answer>`:  
-#    • Provide the final answer to the user and conclude the reasoning process.
-# 5. Tool call format example (must be preceded by a `<think>` block):
-# <think>
-# I need to look up the value of the 'third' field for season 2008. I will call exe_lambda.
-# </think>
-# <tool_call>
-# {{"name": "exe_lambda", "arguments": {{"packages": "import pandas as pd", "lambda_expression": "lambda: df0[df0['season'] == 2008]['third'].values[0]"}}}}
-# </tool_call>
-# 6. Please provide your final answer in {self.depth} steps. You are currently on step {current_depth+1} of {self.depth}.
-
-# # User Question: {question}"""
         prompt = self.ACTION_PROMPT_TEMPLATE.format(
             support_material_str=support_material_str,
             question=question,
@@ -248,20 +183,19 @@ class ReActAgent(abc.ABC):
                         "role": "assistant",
                         "content": resp["completions"]
                     }
-                    res_key = f"result_{len(current_results)}"
-                    current_results[res_key] = e
-                    resp["results"].append(e)
+                    resp["results"].append({"parse_error": e})
                     local_msgs.append({
                         "role": "tool",
-                        "name": "~",
-                        "content": f"Var: {res_key}; Type: {type(e)}\n{e}"
+                        "name": "none",
+                        "content": f"Var: e; Type: {type(e)}\n{e}"
                     })
                 local_msgs.append(assistant_msg)
 
                 tool_calls = assistant_msg.get("tool_calls", [])
-                if len(tool_calls) > 1:
-                    raise RuntimeError(f"Expected at most 1 tool calls, but got {len(tool_calls)}")
+                # if len(tool_calls) > 1:
+                #     raise RuntimeError(f"Expected at most 1 tool calls, but got {len(tool_calls)}")
 
+                
                 for call in tool_calls:
                     tool_name = call["function"]["name"]
                     tool_args = call["function"]["arguments"] or {}
@@ -269,41 +203,39 @@ class ReActAgent(abc.ABC):
                     if tool_name not in self.TOOLS:
                         raise ValueError(f"Unknown tool: {tool_name}")
                     
-                    context = {**current_results, **support_material}
+                    context = {**previous_variables, **support_material}
                     try:
-                        result = self.TOOLS[tool_name](**tool_args, context=context)
+                        output_str, new_context = self.TOOLS[tool_name](**tool_args, context=context)
                     except Exception as e:
-                        result = e
+                        output_str, new_context = f"Var: tool_execute_error; Type: {type(e)}\n{traceback.format_exc()}", context
 
-                    resp["results"].append(result)
-                    res_key = f"result_{len(current_results)}"
-                    current_results[res_key] = result
-
+                    stp_variables = {k: v for k,v in new_context.items() if k not in context}
+                    resp["results"].append({f"tool_call[{tool_calls.index(call)}]": stp_variables})
                     local_msgs.append({
                         "role": "tool",
                         "name": tool_name,
-                        "content": f"Var: {res_key}; Type: {type(result)}\n{result}"
+                        "content": output_str
                     })
+                    previous_variables = {k: v for k,v in new_context.items() if k not in support_material}
 
             except Exception as e:
-                res_key = f"result_{len(current_results)}"
-                current_results[res_key] = e
-                resp["results"].append(e)
+                resp["results"].append({"e": e})
                 local_msgs.append({
                     "role": "tool",
-                    "name": "~",
-                    "content": f"Var: {res_key}; Type: {type(e)}\n{e}"
+                    "name": "none",
+                    "content": f"Var: error; Type: {type(e)}\n{traceback.format_exc()}"
                 })
 
             local_chain.append(resp)
             if current_depth+1 < self.depth:
                 sub_chains = self.react_recursive(
-                    question=question,
-                    support_material_path=support_material_path,
-                    ground_truth=ground_truth, 
-                    assistant_and_tool_msg=local_msgs,
-                    current_chain=local_chain,
-                    current_depth=current_depth + 1,
+                    question               = question,
+                    support_material_path  = support_material_path,
+                    ground_truth           = ground_truth, 
+                    assistant_and_tool_msg = local_msgs,
+                    current_chain          = local_chain,
+                    current_depth          = current_depth + 1,
+                    previous_variables     = previous_variables
                 )
                 all_chains.extend(sub_chains)
             else:
