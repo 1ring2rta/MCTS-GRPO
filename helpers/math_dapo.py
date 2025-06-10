@@ -290,7 +290,7 @@ def compute_score_format(solution_str):
                     format_reward += 1/len(assistant_blocks) if len(assistant_blocks)>0 else 0.0
 
         # Check the last assistant block contains <answer> tags
-        if assistant_blocks:  # 确保有至少一个assistant块
+        if assistant_blocks:
             last_assistant_block = assistant_blocks[-1]
             think_answer_match = re.search(r'^<think>(.*?)</think>\n<answer>(.*?)</answer>$', last_assistant_block, re.DOTALL)
             if think_answer_match:
@@ -366,7 +366,7 @@ def math_dapo_reward(completion: str, ground_truth: dict):
         solution_str=completion,
         ground_truth=ground_truth,
         # adapt pattern if you wrap your <think>/<answer> tags differently
-        answer_pattern=r"(?i)Answer\s*:\s*([^\n]+)"
+        answer_pattern=r"<answer>(.*?)</answer>"
     )
     return out["score"]
 
@@ -398,9 +398,12 @@ def load_math(parquet_path: str) -> Dataset:
         user_msg = msgs[0]["content"]
 
         # --- build the question field with your formatting shim ---
-        q = (
-            user_msg
-            + "\n👆\nformat the final answer as `Answer: <your answer here>`;"
+        q = user_msg.replace(
+            '\n\nRemember to put your answer on its own line after "Answer:".', 
+            "\n👆\nformat the FINAL answer as `<answer>...</answer>`, always a number, e.g. `<answer>2333</answer>`;"
+        ).replace(
+            'Solve the following math problem step by step. The last line of your response should be of the form Answer: $Answer (without quotes) where $Answer is the answer to the problem.\n\n', 
+            ''
         )
 
         # --- extract ground truth from reward_model column ---
