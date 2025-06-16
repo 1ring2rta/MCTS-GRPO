@@ -283,7 +283,7 @@ class MCTSGRPOTrainer(Trainer):
             if isinstance(reward_func, PreTrainedModel):
                 self.reward_funcs[i] = self.accelerator.prepare_model(reward_func, evaluation_mode=True)
 
-        # self.reward_funcs.append(self.llm_self_judge)
+        self.reward_funcs.append(self.llm_self_judge)
 
     def _set_signature_columns_if_needed(self):
         """
@@ -298,75 +298,72 @@ class MCTSGRPOTrainer(Trainer):
         return inputs
     
     def compute_action_rewards(
-        self, 
+        self,
         chains: List[List[dict]],
         reward_funcs: List[Callable[[str, Any], float]],
         ground_truth: Any,
         *,
-        agg_leaf      : Callable[[List[float]], float] | None = None,
-        agg_internal  : Callable[[List[float]], float] | None = None,
-        std_method    : str = None,          # "minmax" | "zscore" | None
-    ) -> List[List[dict]]:
-        if agg_leaf     is None: agg_leaf     = lambda x: max(x)
+        agg_leaf: Callable[[List[float]], float] | None = None,
+        agg_internal: Callable[[List[float]], float] | None = None,
+    ) -> tuple[list[list[dict]], list[float]]:
+        if agg_leaf     is None: agg_leaf     = max
         if agg_internal is None: agg_internal = lambda x: sum(x) / len(x)
 
-        def format_reward_func(completions: str) -> float:
-            TAG_RE = re.compile(r'</?think>|</?answer>')
-            CONTENT_RE = re.compile(
-                r'''\A\s*                      
-                    <think>                    
-                    (?:(?!</?think>).)*?       
-                    </think>                   
-                    \s*\r?\n\s*                
-                    <answer>                   
-                    (?:(?!</?answer>).)*?      
-                    </answer>                  
-                    \s*\Z                      
-                ''',
-                re.DOTALL | re.VERBOSE,
-            )
+        TAG_RE = re.compile(r'</?think>|</?answer>')
+        CONTENT_RE = re.compile(
+            r'^STEP-\d+:\s*<think>.*?</think>\s*<answer>.*?</answer>\s*$',
+            re.DOTALL | re.VERBOSE,
+        )
 
-            def total_repeated_chars(s: str) -> int:
-                n = len(s)
-                suffixes: List[Tuple[str, int]] = [(s[i:], i) for i in range(n)]
-                suffixes.sort()
-                
-                intervals: List[Tuple[int, int]] = []
-                for i in range(n - 1):
-                    a, ai = suffixes[i]
-                    b, bi = suffixes[i + 1]
-                    lcp = 0
-                    limit = min(len(a), len(b))
-                    while lcp < limit and a[lcp] == b[lcp]:
-                        lcp += 1
-                    if lcp:
-                        intervals.append((ai, ai + lcp))
-                        intervals.append((bi, bi + lcp))
+        def total_repeated_chars(s: str) -> int:
+            n = len(s)
+            suffixes: List[Tuple[str, int]] = [(s[i:], i) for i in range(n)]
+            suffixes.sort()
+            
+            intervals: List[Tuple[int, int]] = []
+            for i in range(n - 1):
+                a, ai = suffixes[i]
+                b, bi = suffixes[i + 1]
+                lcp = 0
+                limit = min(len(a), len(b))
+                while lcp < limit and a[lcp] == b[lcp]:
+                    lcp += 1
+                if lcp:
+                    intervals.append((ai, ai + lcp))
+                    intervals.append((bi, bi + lcp))
 
-                if not intervals:
-                    return 0
-                intervals.sort()
-                merged = [list(intervals[0])]
-                for start, end in intervals[1:]:
-                    if start > merged[-1][1]:
-                        merged.append([start, end])
-                    else:
-                        merged[-1][1] = max(merged[-1][1], end)
-                return sum(end - start for start, end in merged)
+            if not intervals:
+                return 0
+            intervals.sort()
+            merged = [list(intervals[0])]
+            for start, end in intervals[1:]:
+                if start > merged[-1][1]:
+                    merged.append([start, end])
+                else:
+                    merged[-1][1] = max(merged[-1][1], end)
+            return sum(end - start for start, end in merged)
 
-            try:
-                if total_repeated_chars(completions) > 128:
-                    return 0.1
-                if TAG_RE.findall(completions) != [
-                    '<think>', '</think>', '<answer>', '</answer>'
-                ]:
-                    return 0.1
-                return 1.0 if CONTENT_RE.fullmatch(completions) else 0.1
+        def format_reward_func(completion: str) -> float:
+            if total_repeated_chars(completion) > 128:
+                return 0.0
+            step_match = re.match(r'^STEP-\d+:\r?\n', completion)
+            if not step_match:
+                return 0.0
+            rest = completion[step_match.end():]
+            think_match = re.match(r'<think>.*?</think>', rest, flags=re.DOTALL)
+            if not think_match:
+                return 0.0
+            remaining = rest[think_match.end():].strip()
+            if not remaining:
+                return 0.2
+            answer_pat   = r'^<answer>.*?</answer>$'
+            toolcall_pat = r'^<tool_call>.*?</tool_call>$'
+            if (re.fullmatch(answer_pat, remaining, flags=re.DOTALL) or
+                re.fullmatch(toolcall_pat, remaining, flags=re.DOTALL)):
+                return 0.2
+            return 0.0
 
-            except Exception:
-                return 0.1
-    
-        # ---------- 1. build adjacency ----------
+        # build tree
         node_children, node_parent_cnt, id2step = defaultdict(set), defaultdict(int), {}
         for chain in chains:
             for i, step in enumerate(chain):
@@ -377,61 +374,50 @@ class MCTSGRPOTrainer(Trainer):
                     node_parent_cnt[cid] += 1
         root_ids = [sid for sid in id2step if node_parent_cnt[sid] == 0]
 
-        # ---------- 2. bottom‑up raw reward ----------
+        # bottom-up
         from functools import lru_cache
         @lru_cache(maxsize=None)
-        def dfs(sid: int) -> float:
+        def dfs_raw(sid: int) -> float:
             step = id2step[sid]
-            if not node_children[sid]:                       # leaf
-                outs = [f(step.get("completions", ""), ground_truth)
-                        for f in reward_funcs]
-                r = agg_leaf(outs) * format_reward_func(step.get("completions", ""))
-            else:                                            # internal
-                r = agg_internal([dfs(cid) for cid in node_children[sid]])
-                step_results = step.get("results", "")
-                if step_results:
-                    r *= mean([0 if "error" in str(sr) else 1 for sr in step_results])
-                else:
-                    r = 0.0
+            if not node_children[sid]:                                   # leaf
+                r = agg_leaf([f(step.get("completions", ""), ground_truth) for f in reward_funcs])
+            else:                                                        # internal
+                r = agg_internal([dfs_raw(cid) for cid in node_children[sid]])
             step["reward"] = r
             return r
         for rid in root_ids:
-            dfs(rid)
+            dfs_raw(rid)
 
-        # ---------- 3. compute depth for each node ----------
+        avg_acc = mean([id2step[rid]["reward"] for rid in root_ids])
+
+        for step in id2step.values():
+            if step.get("results"):
+                if any("error" in str(sr) for sr in step["results"]):
+                    step["reward"] *= 0.1
+            step["reward"] += format_reward_func(step.get("completions", ""))
+
+        # normalize
         depth_of = {}
         Q = deque([(rid, 0) for rid in root_ids])
         while Q:
             sid, d = Q.popleft()
             depth_of[sid] = d
-            for cid in node_children[sid]:
-                Q.append((cid, d + 1))
+            Q.extend((cid, d + 1) for cid in node_children[sid])
 
-        # ---------- 4. depth‑wise standardization ----------
-        if std_method:
-            depth_buckets = defaultdict(list)
-            for sid, d in depth_of.items():
-                depth_buckets[d].append(sid)
+        depth_buckets = defaultdict(list)
+        for sid, d in depth_of.items():
+            depth_buckets[d].append(sid)
 
-            for d, nodes in depth_buckets.items():
-                vals = [id2step[sid]["reward"] for sid in nodes]
-                if std_method == "minmax":
-                    v_min, v_max = min(vals), max(vals)
-                    scale = v_max - v_min
-                    for sid in nodes:
-                        r = id2step[sid]["reward"]
-                        id2step[sid]["reward"] = 0.5 if scale == 0 else (r - v_min) / scale
-                elif std_method == "zscore":
-                    mu = sum(vals) / len(vals)
-                    sigma2 = sum((v - mu) ** 2 for v in vals) / len(vals)
-                    sigma = sigma2 ** 0.5
-                    for sid in nodes:
-                        r = id2step[sid]["reward"]
-                        id2step[sid]["reward"] = 0.0 if sigma == 0 else (r - mu) / sigma
-                else:
-                    raise ValueError(f"Unknown std_method: {std_method}")
+        for nodes in depth_buckets.values():
+            vals = [id2step[sid]["reward"] for sid in nodes]
+            mu = sum(vals) / len(vals)
+            sigma2 = sum((v - mu) ** 2 for v in vals) / len(vals)
+            sigma = sigma2 ** 0.5
+            for sid in nodes:
+                id2step[sid]["reward"] = 0.0 if sigma == 0 else (id2step[sid]["reward"] - mu) / sigma
 
-        # ---------- 5. render tree ----------
+
+        # render tree
         def render(sid: int, depth: int = 0) -> str:
             step  = id2step[sid]
             r     = step["reward"]
@@ -444,7 +430,7 @@ class MCTSGRPOTrainer(Trainer):
             for rid in root_ids:
                 f.write(render(rid))
 
-        return chains
+        return avg_acc, chains
     
     def llm_self_judge(self, model_output, ground_truth):
         matches = re.findall(r'<answer>(.*?)</answer>', model_output)
@@ -454,16 +440,11 @@ class MCTSGRPOTrainer(Trainer):
             return 0.0
 
         prompt = f"""\
-Evaluate the model’s answer against the human-annotated ground truth and decide how correct it is.
+Evaluate the model’s answer against the human-annotated ground truth.
 
 ## Instructions
-1. Return a correctness score **between 0 and 1** (inclusive).  
-2. Think step-by-step before scoring; wrap your reasoning in `<think>…</think>` tags.  
-3. Wrap **only** the final score in `<answer>…</answer>` tags, e.g. `<answer>0.63</answer>`.  
-4. The ground-truth annotation may itself contain mistakes—use your best judgment.
-
-## Given
-{self.support_material_str}
+1. Return a correctness score **either 0 or 1** (1 represents model_output == ground_truth).  
+3. Wrap **only** the final score in `<answer>…</answer>`.  
 
 ## Query
 {self.question.split('👆')[0]}
@@ -499,10 +480,8 @@ Evaluate the model’s answer against the human-annotated ground truth and decid
         if matches:
             try:
                 score = float(matches[-1])
-                if 0 <= score <= 1.0:
-                    return score
-                elif score > 1.0:
-                    return 1.0
+                if score == 1.0:
+                    return 0.1
                 else:
                     return 0.0
             except Exception as e:
@@ -585,8 +564,8 @@ Evaluate the model’s answer against the human-annotated ground truth and decid
 
         # ---------- 2. BFS expansions per sample ----------
         if self.accelerator.is_main_process:
-            scored_batched_chains = []
-
+            batched_scored_chains = []
+            avg_acc_list = []
             for inp in inputs:
                 self.question, self.ground_truth, self.support_material_path  = inp["question"], inp["ground_truth"], inp["support_material_path"]
 
@@ -605,18 +584,20 @@ Evaluate the model’s answer against the human-annotated ground truth and decid
                     ground_truth =          self.ground_truth
                 )
 
-                scored_batched_chains.extend(
-                    self.compute_action_rewards(
-                        chains=expansions,
-                        ground_truth=self.ground_truth,
-                        reward_funcs=self.reward_funcs,
-                    )
+                avg_acc, scored_chains = self.compute_action_rewards(
+                    chains=expansions,
+                    ground_truth=self.ground_truth,
+                    reward_funcs=self.reward_funcs,
+                )
+                avg_acc_list.append(avg_acc)
+                batched_scored_chains.extend(
+                    scored_chains
                 )
 
             # flatten, de-duplicate by completion text
             seen, flattened_steps = set(), []
-            for chain in scored_batched_chains:
-                for step in chain[:-1]:
+            for chain in batched_scored_chains:
+                for step in chain:
                     key = step.get("completions", "")
                     if key not in seen:
                         flattened_steps.append(step)
@@ -627,11 +608,10 @@ Evaluate the model’s answer against the human-annotated ground truth and decid
             for s in flattened_steps:
                 buckets_raw[s["current_depth"]].append(s)
 
-            root_steps = buckets_raw.get(0, [])
-            avg_acc = mean(s['reward'] for s in root_steps) if root_steps else 0
+            batch_avg_acc = mean(avg_acc_list)
             
-            self._metrics["avgAcc"].append(avg_acc)
-            self.writer.add_scalar("avgAcc", avg_acc, self.state.global_step)
+            self._metrics["avgAcc"].append(batch_avg_acc)
+            self.writer.add_scalar("avgAcc", batch_avg_acc, self.state.global_step)
 
             buckets = {
                 d: v for d, v in buckets_raw.items() if len(v)>1 and variance([s["reward"] for s in v]) > 0
@@ -646,14 +626,16 @@ Evaluate the model’s answer against the human-annotated ground truth and decid
                     print(f"DEPTH: {d}; \n REWARD_LIST: {[s['reward'] for s in v]}") 
                 flattened_steps = list()
             else:
-                depth_sel = random.choice(list(buckets.keys()))
-                layer = buckets[depth_sel]; print(f"We choose nodes of {depth_sel} depth to optimize, {len(layer)} nodes in total.")
-                if len(layer) > self.num_generations:
-                    layer = sorted(layer, key=lambda x: x["reward"])
-                    idx = np.linspace(0, len(layer) - 1, self.num_generations, dtype=int)
-                    flattened_steps = [layer[i] for i in idx]
+                candidates = [step for layer in buckets.values() for step in layer if len(step["completion_ids"]) < self.max_completion_length]
+                print(f"We have {len(buckets)} layers with non-zero variance, total candidates: {len(candidates)}")
+
+                if len(candidates) > self.num_generations:
+                    flattened_steps = random.sample(candidates, self.num_generations)
                 else:
-                    flattened_steps = layer
+                    flattened_steps = candidates
+
+                print(f"Sampled {len(flattened_steps)} steps for optimization")
+
                 
             for fstp in flattened_steps:
                 dump_with_rich(fstp, os.path.join(self.args.output_dir, "tmp_train.txt"))
@@ -742,7 +724,7 @@ Evaluate the model’s answer against the human-annotated ground truth and decid
         # ---------- 6. Metrics ----------
         comp_len = self.accelerator.gather_for_metrics(completion_mask.sum(1)).float().mean().item()
         self._metrics["completion_length"].append(comp_len)
-        self._metrics["reward"].append(self.accelerator.gather_for_metrics(rewards).mean().item())
+        self._metrics["reward"].append(self.accelerator.gather_for_metrics(mean_grouped_rewards).mean().item())
         self._metrics["reward_std"].append(self.accelerator.gather_for_metrics(std_grouped_rewards).mean().item())
         mean_kl = ((per_token_kl * completion_mask).sum(1) / completion_mask.sum(1)).mean()
         self._metrics["kl"].append(self.accelerator.gather_for_metrics(mean_kl).mean().item())
