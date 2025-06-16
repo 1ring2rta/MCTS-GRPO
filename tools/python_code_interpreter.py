@@ -1,4 +1,5 @@
 from typing import Dict, List
+from types import ModuleType
 from tools.local_python_executor import LocalPythonExecutor
 from tools.tool_base import Tool
 
@@ -26,13 +27,7 @@ class TimeoutException(Exception):
     pass
 
 
-# ---------- core helper ----------
-def smart_repr(obj, *, width=80, list_items=10, str_chars=120):
-    """
-    Return a readable, size-bounded representation of *obj*.
-    Handles DataFrames/Series, ndarrays, large containers, and long strings.
-    """
-    # 1. pandas ----------------------------------------------------------------
+def smart_repr(obj, *, list_items=10, str_chars=120):
     if isinstance(obj, (pd.DataFrame, pd.Series)):
         info = f"<{type(obj).__name__} shape={obj.shape}>"
         # head & tail as a mini-preview
@@ -43,16 +38,12 @@ def smart_repr(obj, *, width=80, list_items=10, str_chars=120):
         )
         return f"{info}\n{preview}"
 
-    # 2. numpy -----------------------------------------------------------------
     if isinstance(obj, np.ndarray):
-        # np.array2string already truncates long arrays nicely
         return f"<ndarray shape={obj.shape} dtype={obj.dtype}>\n{np.array2string(obj, threshold=20)}"
 
-    # 3. big strings -----------------------------------------------------------
     if isinstance(obj, str) and len(obj) > str_chars:
         return textwrap.shorten(obj, width=str_chars, placeholder="…")
 
-    # 4. lists / tuples / dicts / sets -----------------------------------------
     if isinstance(obj, (list, tuple, set)):
         # slice & keep symmetry: first N//2, last N//2
         seq = list(obj)
@@ -72,22 +63,19 @@ def smart_repr(obj, *, width=80, list_items=10, str_chars=120):
             shown = obj.items()
         return f"dict({shown})"
 
-    # 5. everything else -------------------------------------------------------
     r = reprlib.Repr()
     r.maxstring = str_chars
     r.maxother  = str_chars
     return r.repr(obj)
 
-# ---------- drop-in replacement ----------
-def format_variables(variables: dict, *, print_outputs=None) -> str:
+def format_variables(variables: dict) -> str:
     """
     Build the nicely truncated dump string.
     """
     pieces = []
-    if print_outputs is not None:
-        pieces.append(f">>> {smart_repr(print_outputs)}")
-    for k, v in variables.items():
-        pieces.append(f"Var: {k}; Type: {type(v).__name__}\n{smart_repr(v)}")
+    for k, v in list(variables.items())[-10:]:
+        if not isinstance(v, ModuleType):
+            pieces.append(f"Var: {k}; Type: {type(v).__name__}\n{smart_repr(v)}")
     return "\n".join(pieces)
 
 
@@ -234,10 +222,9 @@ def execute_python_code(code, context: dict = dict()):
         
         variables = results.copy()
         context.update(variables)
-        
+
         output_str = format_variables(
             variables = variables, 
-            print_outputs = print_outputs
         )
     else:
         output_str = results
@@ -251,8 +238,7 @@ description = [
         "function": {
             "name": "execute_python_code",
             "description": (
-                "Execute Python code in a sandboxed environment with timeout and capture output."
-                "The returned result includes only printed outputs, assigned variable values, and imported modules or objects (so do not `import *`)."
+                "Execute Python code in a sandboxed environment."
             ),
             "parameters": {
                 "type": "object",
