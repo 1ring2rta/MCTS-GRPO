@@ -54,11 +54,7 @@ import random
 
 class MTPOTrainer(Trainer):
     """
-    ReActGRPOTrainer that uses BFS-like expansions for ReAct steps, 
-    then does a policy-gradient style update with reference model KL, similar to GRPO.
-
-    [# NEW or CHANGED]: the device management, reference model, and vLLM logic 
-    closely mirror the standard GRPOTrainer. 
+    MTPOTrainer that uses BFS-like expansions for ReAct steps.
     """
     _tag_names = ["trl", "grpo"]
 
@@ -76,11 +72,11 @@ class MTPOTrainer(Trainer):
         optimizers: tuple = (None, None),
     ):
         self.agent_cls = agent_cls
-        # Prepare the ReActGRPOConfig if needed
+        # Prepare the MTPOConfig if needed
         if args is None:
             model_name = model if isinstance(model, str) else model.config._name_or_path
             model_name = model_name.split("/")[-1]
-            args = MTPOConfig(f"{model_name}-GRPO")
+            args = MTPOConfig(f"{model_name}-MTPO")
 
         self.depth = args.depth
         self.breadth = args.breadth
@@ -101,7 +97,7 @@ class MTPOTrainer(Trainer):
                 model_init_kwargs["torch_dtype"] = torch_dtype
             else:
                 raise ValueError(
-                    "Invalid `torch_dtype` passed to `ReActGRPOConfig`. Expected either 'auto' or a string representing "
+                    "Invalid `torch_dtype` passed to `MTPOConfig`. Expected either 'auto' or a string representing "
                     f"a `torch.dtype` (e.g., 'float32'), but got {torch_dtype}."
                 )
             # Disable caching if gradient checkpointing is enabled (not supported)
@@ -113,7 +109,7 @@ class MTPOTrainer(Trainer):
             model_id = model.config._name_or_path
             if args.model_init_kwargs is not None:
                 raise ValueError(
-                    "You passed `model_init_kwargs` to the `ReActGRPOConfig`, but your model is already instantiated. "
+                    "You passed `model_init_kwargs` to the `MTPOConfig`, but your model is already instantiated. "
                     "This argument can only be used when the `model` argument is a string."
                 )
 
@@ -161,22 +157,15 @@ class MTPOTrainer(Trainer):
         self.reward_processing_classes = reward_processing_classes
 
         # Data collator
-        def data_collator(features):  # No data collation is needed in GRPO
+        def data_collator(features):
             return features
 
         # Training arguments
         self.max_prompt_length = args.max_prompt_length
-        self.max_completion_length = args.max_completion_length  # = |o_i| in the GRPO paper
-        self.num_generations = args.num_generations  # = G in the GRPO paper
+        self.max_completion_length = args.max_completion_length
+        self.num_generations = args.num_generations
         self.use_vllm = args.use_vllm
         self.beta = args.beta
-
-        # The trainer estimates the number of FLOPs (floating-point operations) using the number of elements in the
-        # input tensor associated with the key "input_ids". However, in GRPO, the sampled data does not include the
-        # "input_ids" key. Instead, the available keys is "prompt". As a result, the trainer issues the warning:
-        # "Could not estimate the number of tokens of the input, floating-point operations will not be computed." To
-        # suppress this warning, we set the "estimate_tokens" key in the model's "warnings_issued" dictionary to True.
-        # This acts as a flag to indicate that the warning has already been issued.
         model.warnings_issued["estimate_tokens"] = True
 
         # Initialize the metrics
@@ -334,21 +323,25 @@ class MTPOTrainer(Trainer):
         def format_reward_func(completion: str) -> float:
             if total_repeated_chars(completion) > 128:
                 return 0.0
+            
             step_match = re.match(r'^STEP-\d+:\r?\n', completion)
             if not step_match:
                 return 0.0
             rest = completion[step_match.end():]
+            if re.search(r'STEP-\d+:', rest):
+                return 0.0
+
             think_match = re.match(r'<think>.*?</think>', rest, flags=re.DOTALL)
             if not think_match:
                 return 0.0
             remaining = rest[think_match.end():].strip()
             if not remaining:
-                return 0.2
+                return 0.5
             answer_pat   = r'^<answer>.*?</answer>$'
             toolcall_pat = r'^<tool_call>.*?</tool_call>$'
             if (re.fullmatch(answer_pat, remaining, flags=re.DOTALL) or
                 re.fullmatch(toolcall_pat, remaining, flags=re.DOTALL)):
-                return 0.2
+                return 0.5
             return 0.0
 
         # build tree
@@ -421,6 +414,9 @@ class MTPOTrainer(Trainer):
         return avg_acc, chains
     
     def llm_self_judge(self, model_output, ground_truth):
+        if str(ground_truth) not in model_output:
+            return 0.0
+
         matches = re.findall(r'<answer>(.*?)</answer>', model_output)
         if matches:
             model_output = matches[-1]
@@ -469,7 +465,7 @@ Evaluate the model’s answer against the human-annotated ground truth.
             try:
                 score = float(matches[-1])
                 if score == 1.0:
-                    return 0.1
+                    return 0.5
                 else:
                     return 0.0
             except Exception as e:
@@ -481,7 +477,7 @@ Evaluate the model’s answer against the human-annotated ground truth.
         if self.eval_dataset is None or not self.accelerator.is_main_process:
             return
 
-        # -- turn it into a real Python sequence if needed ----------
+        # turn it into a real Python sequence if needed
         if isinstance(self.eval_dataset, Sequence):
             population = self.eval_dataset
         else:
@@ -525,23 +521,10 @@ Evaluate the model’s answer against the human-annotated ground truth.
             self.writer.add_scalar("Eval/EvalAcc", avg_r, self.state.global_step)
 
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
-        """
-        Main training step for ReAct-GRPO.
-
-        Pipeline:
-            1. ReAct BFS expansions (vLLM only on rank-0).
-            2. Broadcast expansions so every rank owns identical data.
-            3. Compute GRPO loss (policy-gradient + KL) using exactly the
-            same formulation as the original GRPOTrainer.
-        """
         if return_outputs:
-            raise ValueError("ReActGRPOTrainer does not support `return_outputs=True`.")
-
-        # print("NCCL_TIMEOUT =", os.getenv("NCCL_TIMEOUT"))
-        # print("TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC =", os.getenv("TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC"))
+            raise ValueError("MTPOTrainer does not support `return_outputs=True`.")
 
         device = self.accelerator.device
-        # ---------- 1. vLLM weight sync (same as GRPOTrainer) ----------
         if self.state.global_step != self._last_loaded_step:
             with unwrap_model_for_generation(model, self.accelerator) as unwrapped:
                 state_dict = unwrapped.state_dict()
@@ -550,7 +533,7 @@ Evaluate the model’s answer against the human-annotated ground truth.
                 llm_model.load_weights(state_dict.items())
             self._last_loaded_step = self.state.global_step
 
-        # ---------- 2. BFS expansions per sample ----------
+        # BFS expansions per sample
         if self.accelerator.is_main_process:
             batched_scored_chains = []
             avg_acc_list = []
@@ -607,7 +590,7 @@ Evaluate the model’s answer against the human-annotated ground truth.
 
             if not buckets:
                 print(
-                    f"[ReActGRPOTrainer] step={self.state.global_step}  "
+                    f"[MTPOTrainer] step={self.state.global_step}  "
                     "all reward variances == 0 → skip update, loss = 0"
                 )
                 for d, v in buckets_raw.items():
@@ -618,7 +601,9 @@ Evaluate the model’s answer against the human-annotated ground truth.
                 print(f"We have {len(buckets)} layers with non-zero variance, total candidates: {len(candidates)}")
 
                 if len(candidates) > self.num_generations:
-                    flattened_steps = random.sample(candidates, self.num_generations)
+                    # flattened_steps = random.sample(candidates, self.num_generations)
+                    idx = np.linspace(0, len(candidates) - 1, self.num_generations, dtype=int)
+                    flattened_steps = [candidates[i] for i in idx]
                 else:
                     flattened_steps = candidates
 
@@ -635,7 +620,7 @@ Evaluate the model’s answer against the human-annotated ground truth.
             if flattened_steps:
                 print(flattened_steps[0].keys())
 
-        # ---------- 4. Broadcast flattened_steps to every rank ----------
+        # Broadcast flattened_steps to every rank
         wrapper = [flattened_steps] if self.accelerator.is_main_process else [None]
         wrapper = broadcast_object_list(wrapper, from_process=0); flattened_steps = wrapper[0]
 
@@ -654,7 +639,7 @@ Evaluate the model’s answer against the human-annotated ground truth.
         prompt_length = flattened_steps[0]["prompt_ids"].size(1)
         completion_ids = prompt_completion_ids[:, prompt_length:]
         
-        # ---------- 5. Batched log-prob collection ----------
+        # 5. Batched log-prob collection
         # Get the per-token log probabilities for the completions for the model and the reference model
         def get_per_token_logps(model, input_ids, num_logits_to_keep):
             # We add 1 to `num_logits_to_keep` because the last logits of the sequence is later excluded
@@ -689,7 +674,7 @@ Evaluate the model’s answer against the human-annotated ground truth.
         sequence_indices = torch.arange(is_eos.size(1), device=device).expand(is_eos.size(0), -1)
         completion_mask = (sequence_indices <= eos_idx.unsqueeze(1)).int()
 
-        # ---------- 6. Pad/mask & loss ----------
+        # Pad/mask & loss
         rewards = torch.tensor([stp["reward"] for stp in flattened_steps], requires_grad=True).to(device)
         # Compute grouped-wise rewards
         mean_grouped_rewards = rewards.view(-1, group_size).mean(dim=1)
@@ -709,7 +694,6 @@ Evaluate the model’s answer against the human-annotated ground truth.
         per_token_loss = -(per_token_loss - self.beta * per_token_kl)
         loss = ((per_token_loss * completion_mask).sum(dim=1) / completion_mask.sum(dim=1)).mean()
 
-        # ---------- 6. Metrics ----------
         comp_len = self.accelerator.gather_for_metrics(completion_mask.sum(1)).float().mean().item()
         self._metrics["completion_length"].append(comp_len)
         self._metrics["reward"].append(self.accelerator.gather_for_metrics(mean_grouped_rewards).mean().item())
@@ -718,7 +702,6 @@ Evaluate the model’s answer against the human-annotated ground truth.
         self._metrics["kl"].append(self.accelerator.gather_for_metrics(mean_kl).mean().item())
         self._metrics["loss"].append(loss.item())
 
-        # TensorBoard
         if hasattr(self, "writer"):
             step_id = self.state.global_step
             self.writer.add_scalar("Loss/PolicyLoss", loss.item(), step_id)
