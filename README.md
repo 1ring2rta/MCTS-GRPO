@@ -30,7 +30,7 @@ pip install openpyxl
 ![Qwen2.5-7B, Trained on WikiTQ](trainer/screenshots.png)
 
 
-| Task         | Dataset       | Qwen2.5-7B-Instruct | MCTS-GRPO  |
+| Task         | Dataset       | Qwen2.5-7B-Instruct | MCTS+GRPO  |
 |--------------|---------------|---------------------|------------|
 | TableQA      | FEVEROUS      |                     |            |
 |              | WikiTQ        | 68.55%              | 75.62%     |
