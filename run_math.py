@@ -22,38 +22,48 @@ class TableAgent(ReActAgent):
     TOOLS_DESCRIPTION = description
 
     ACTION_PROMPT_TEMPLATE = """\
-- Solve the problem step-by-step.
-- Conclude by presenting a definitive answer to exit the loop.
+SOLVE THE PROBLEM STEP-BY-STEP. PRESENT THE ANSWER TO EXIT THE LOOP.
+
 
 {support_material_str}
 
-# Notice:
--> Each response **MUST contain exactly one** block, chosen from  
-   • <think>...</think> **OR**  
-   • <tool_call>...</tool_call> **OR**  
-   • <answer>...</answer>.  
-   No additional visible content is allowed outside these tags (only whitespace is permitted).
--> <think>...</think>:  
-   • Clearly explain your reasoning and justify your next action.
--> <tool_call>...</tool_call>:  
-   • Only for verifying your thoughts, not for performing complex calculations or taking shortcuts.
-   • Provide a single JSON-formatted tool invocation.  
-   • No <think> block may appear in the same response.
--> <answer>...</answer>:  
-   • Provide the final answer to the user and conclude the reasoning process.
--> Tool-call example (placed in its own response):  
-STEP-\d+:
+
+# Guidelines
+→ Each assistant response **must contain exactly one** `<think>...</think>` block.  
+  · If a tool is required, the `<think>` block **must be followed immediately** by a single `<tool_call>...</tool_call>` block.  
+  · If the final answer is ready, the `<think>` block **must be followed immediately** by a single `<answer>...</answer>` block.  
+  · A single response **must not** include both a `<tool_call>` and an `<answer>` block.  
+  · No content other than whitespace may appear outside these tags.
+→ Inside `<think>...</think>`:  
+  · Clearly articulate your reasoning and justify the next step.  
+→ Inside `<tool_call>...</tool_call>`:  
+  · Tool call is only for verifying your thoughts, not for performing complex calculations or taking shortcuts.
+  · Include only when necessary, and place it directly after the corresponding `<think>` block.  
+  · Invoke **at most one** tool per response.
+→ Inside `<answer>...</answer>`:  
+  · Provide the final answer to the user and conclude the reasoning process.
+→ Example tool call (must follow a `<think>` block):
+<think>
+...
+</think>
 <tool_call>
-{{"name": "execute_python_code", "arguments": {{"code": "
+{{
+  "name": "execute_python_code",
+  "arguments": {{
+    "code": "
 def func(...):
     ...
-"}}}}
+"
+  }}
+}}
 </tool_call>
--> Please provide your final answer in {max_steps} steps. You are currently on step {current_step} of {max_steps}.
--> Begin your response with STEP-{current_step}:\\n, and should not containing other STEP-\d+.
+→ Deliver your complete answer within **{max_steps}** steps.  
+  · You are currently on **step {current_step} of {max_steps}**, do not include any additional text matching the pattern `STEP-\d+`.
+  · Begin every response with `STEP-{current_step}:\\n<think>...`.  
 
 
-# User Question: {question}"""
+# User Question:
+{question}"""
 
 ########################
 # Custom dataclasses
@@ -112,9 +122,9 @@ def grpo_function(
     ###############
     # Load datasets
     ###############
-    train_dataset = load_math('dapo-math-17k_filtered.parquet') \
+    train_dataset = load_math('dapo-math-17k.parquet') \
                       .train_test_split(test_size=0.1, seed=42)["train"]
-    test_dataset  = load_math('dapo-math-17k_filtered.parquet') \
+    test_dataset  = load_math('dapo-math-17k.parquet') \
                       .train_test_split(test_size=0.1, seed=42)["test"]
 
     #########################   
