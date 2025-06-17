@@ -9,16 +9,12 @@ import pandas as pd
 pd.set_option('display.max_columns', None)
 pd.set_option('display.max_rows', 8)
 
-import random
-import re 
-import torch
 from transformers.trainer_utils import get_last_checkpoint
 from transformers import AutoTokenizer
-from datasets import load_dataset
 from trl import get_peft_config, ModelConfig, TrlParser
 
-from trainer.mcts_grpo_trainer import ReActGRPOTrainer
-from trainer.mcts_grpo_config import ReActGRPOConfig
+from trainer.mtpo_trainer import MTPOTrainer
+from trainer.mtpo_config import MTPOConfig
 from trainer.agent import ReActAgent
 
 from helpers.wikitq import wikitq_reward, load_wikitq
@@ -101,7 +97,7 @@ logger.addHandler(handler)
 ########################
 # Helper functions
 ########################
-def get_checkpoint(training_args: ReActGRPOConfig):
+def get_checkpoint(training_args: MTPOConfig):
     last_checkpoint = None
     if os.path.isdir(training_args.output_dir):
         last_checkpoint = get_last_checkpoint(training_args.output_dir)
@@ -109,7 +105,7 @@ def get_checkpoint(training_args: ReActGRPOConfig):
 
 
 def grpo_function(
-    model_args: ModelConfig, script_args: ScriptArguments, training_args: ReActGRPOConfig
+    model_args: ModelConfig, script_args: ScriptArguments, training_args: MTPOConfig
 ):
     #########################
     # Log parameters
@@ -148,7 +144,7 @@ def grpo_function(
     #########################   
     # Instantiate trainer
     #########################
-    trainer = ReActGRPOTrainer(
+    trainer = MTPOTrainer(
       model=model_args.model_name_or_path,
       agent_cls=TableAgent, 
       args=training_args,
@@ -205,7 +201,7 @@ def grpo_function(
 
 
 def main():
-    parser = TrlParser((ModelConfig, ScriptArguments, ReActGRPOConfig))
+    parser = TrlParser((ModelConfig, ScriptArguments, MTPOConfig))
     model_args, script_args, training_args = parser.parse_args_and_config()
 
     # Run the main training loop
