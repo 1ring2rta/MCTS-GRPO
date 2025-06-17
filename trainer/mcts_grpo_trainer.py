@@ -33,15 +33,11 @@ from transformers import (
 from transformers.integrations.deepspeed import is_deepspeed_zero3_enabled
 from transformers.utils import is_peft_available
 
-from ..data_utils import apply_chat_template, is_conversational, maybe_apply_chat_template
-from ..import_utils import is_vllm_available
-from ..models import create_reference_model, prepare_deepspeed, unwrap_model_for_generation
-from .react_grpo_config import ReActGRPOConfig
-from .utils import generate_model_card, get_comet_experiment_url, pad
-from .agent import ReActAgent, dump_with_rich
-
-if is_peft_available():
-    from peft import PeftConfig, get_peft_model
+from trl.import_utils import is_vllm_available
+from trl.models import create_reference_model, prepare_deepspeed, unwrap_model_for_generation
+from trl.trainer.utils import pad
+from trainer.agent import ReActAgent, dump_with_rich
+from trainer.mtpo_config import MTPOConfig
 
 if is_vllm_available():
     from vllm import LLM, SamplingParams
@@ -53,11 +49,10 @@ RewardFunc = Union[str, PreTrainedModel, Callable[[list, list], list[float]]]
 
 from torch.utils.tensorboard import SummaryWriter
 import re
-import asyncio
 import random
 
 
-class MCTSGRPOTrainer(Trainer):
+class MTPOTrainer(Trainer):
     """
     ReActGRPOTrainer that uses BFS-like expansions for ReAct steps, 
     then does a policy-gradient style update with reference model KL, similar to GRPO.
@@ -72,21 +67,20 @@ class MCTSGRPOTrainer(Trainer):
         model: Union[str, PreTrainedModel],
         agent_cls: Optional[ReActAgent], 
         reward_funcs: Union[Callable, PreTrainedModel, str, List[Union[Callable, PreTrainedModel, str]]],
-        args: ReActGRPOConfig,
+        args: MTPOConfig,
         train_dataset: Optional[Union[Dataset, IterableDataset]] = None,
         eval_dataset: Optional[Union[Dataset, IterableDataset, Dict[str, Union[Dataset, IterableDataset]]]] = None,
         processing_class: Optional[PreTrainedTokenizerBase] = None,
         reward_processing_classes: Optional[Union[PreTrainedTokenizerBase, List[PreTrainedTokenizerBase]]] = None,
         callbacks: Optional[List[TrainerCallback]] = None,
         optimizers: tuple = (None, None),
-        peft_config: Optional["PeftConfig"] = None,
     ):
         self.agent_cls = agent_cls
         # Prepare the ReActGRPOConfig if needed
         if args is None:
             model_name = model if isinstance(model, str) else model.config._name_or_path
             model_name = model_name.split("/")[-1]
-            args = ReActGRPOConfig(f"{model_name}-GRPO")
+            args = MTPOConfig(f"{model_name}-GRPO")
 
         self.depth = args.depth
         self.breadth = args.breadth
@@ -123,15 +117,9 @@ class MCTSGRPOTrainer(Trainer):
                     "This argument can only be used when the `model` argument is a string."
                 )
 
-        if peft_config is not None:
-            model = get_peft_model(model, peft_config)
-
         # Reference model
         if is_deepspeed_zero3_enabled():
             self.ref_model = AutoModelForCausalLM.from_pretrained(model_id, **model_init_kwargs)
-        elif peft_config is None:
-            # If PEFT configuration is not provided, create a reference model based on the initial model.
-            self.ref_model = create_reference_model(model)
         else:
             # If PEFT is used, the reference model is not needed since the adapter can be disabled
             # to revert to the initial model.
