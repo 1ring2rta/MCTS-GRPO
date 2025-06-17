@@ -4,15 +4,12 @@ from dataclasses import dataclass
 from datetime import datetime
 os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 
-import random
-import re 
-import torch
 from transformers.trainer_utils import get_last_checkpoint
 from transformers import AutoTokenizer
 from trl import get_peft_config, ModelConfig, TrlParser
 
-from trainer.mcts_grpo_trainer import ReActGRPOTrainer
-from trainer.mcts_grpo_config import ReActGRPOConfig
+from trainer.mtpo_trainer import MTPOTrainer
+from trainer.mtpo_config import MTPOConfig
 from trainer.agent import ReActAgent
 
 from helpers.math_dapo import load_math, math_dapo_reward
@@ -25,41 +22,36 @@ class TableAgent(ReActAgent):
     TOOLS_DESCRIPTION = description
 
     ACTION_PROMPT_TEMPLATE = """\
-- Gather sufficient information or perform necessary verifications by invoking relevant tools.
-- Provide comprehensive reasoning by clearly outlining your chain of thought.
+- Solve the problem step-by-step.
 - Conclude by presenting a definitive answer to exit the loop.
-
 
 {support_material_str}
 
-
 # Notice:
-1. Each response **MUST contain exactly one** `<think>...</think>` block.  
-   • If tool usage is needed, it **must be immediately followed** by one `<tool_call>...</tool_call>` block.  
-   • If the final answer is ready, it **must be immediately followed** by one `<answer>...</answer>` block.  
-   • A single response **MUST NOT contain both** `<tool_call>` and `<answer>`.  
-   • No additional visible content is allowed outside these tags (only whitespace is permitted).
-2. Inside `<think>...</think>`:  
-   • Clearly explain your reasoning and justify your next step.  
-   • DO NOT include any nested `<think>` or `<answer>` tags.
-3. Inside `<tool_call>...</tool_call>`:  
-   • Include only when necessary, and always place it directly after `<think>`.
-   • No more than 1 call a time.
-4. Inside `<answer>...</answer>`:  
+-> Each response **MUST contain exactly one** block, chosen from  
+   • <think>...</think> **OR**  
+   • <tool_call>...</tool_call> **OR**  
+   • <answer>...</answer>.  
+   No additional visible content is allowed outside these tags (only whitespace is permitted).
+-> <think>...</think>:  
+   • Clearly explain your reasoning and justify your next action.
+-> <tool_call>...</tool_call>:  
+   • Only for verifying your thoughts, not for performing complex calculations or taking shortcuts.
+   • Provide a single JSON-formatted tool invocation.  
+   • No <think> block may appear in the same response.
+-> <answer>...</answer>:  
    • Provide the final answer to the user and conclude the reasoning process.
-5. Tool call format example (must be preceded by a `<think>` block):
-<think>
-...
-</think>
-<tool_call>    
+-> Tool-call example (placed in its own response):  
+STEP-\d+:
+<tool_call>
 {{"name": "execute_python_code", "arguments": {{"code": "
 def func(...):
     ...
-...
 "}}}}
 </tool_call>
-6. Generate concise ideas and rapidly validate them through suitable computational tools.
-7. Please provide your final answer in {max_steps} steps. You are currently on step {current_step} of {max_steps}.
+-> Please provide your final answer in {max_steps} steps. You are currently on step {current_step} of {max_steps}.
+-> Begin your response with STEP-{current_step}:\\n, and should not containing other STEP-\d+.
+
 
 # User Question: {question}"""
 
@@ -86,7 +78,7 @@ logger.addHandler(handler)
 ########################
 # Helper functions
 ########################
-def get_checkpoint(training_args: ReActGRPOConfig):
+def get_checkpoint(training_args: MTPOConfig):
     last_checkpoint = None
     if os.path.isdir(training_args.output_dir):
         last_checkpoint = get_last_checkpoint(training_args.output_dir)
@@ -94,7 +86,7 @@ def get_checkpoint(training_args: ReActGRPOConfig):
 
 
 def grpo_function(
-    model_args: ModelConfig, script_args: ScriptArguments, training_args: ReActGRPOConfig
+    model_args: ModelConfig, script_args: ScriptArguments, training_args: MTPOConfig
 ):
     #########################
     # Log parameters
@@ -128,7 +120,7 @@ def grpo_function(
     #########################   
     # Instantiate trainer
     #########################
-    trainer = ReActGRPOTrainer(
+    trainer = MTPOTrainer(
       model=model_args.model_name_or_path,
       agent_cls=TableAgent, 
       args=training_args,
@@ -185,7 +177,7 @@ def grpo_function(
 
 
 def main():
-    parser = TrlParser((ModelConfig, ScriptArguments, ReActGRPOConfig))
+    parser = TrlParser((ModelConfig, ScriptArguments, MTPOConfig))
     model_args, script_args, training_args = parser.parse_args_and_config()
 
     # Run the main training loop
