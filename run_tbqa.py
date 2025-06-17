@@ -73,12 +73,12 @@ def func(...):
 ########################
 @dataclass
 class ScriptArguments:
-    train_wikitq: str = "/mnt/data/tg_hhd/hanchen/DATA-Agent_TableQA/data/wikitq/train/data.jsonl"
-    eval_wikitq: str = "/mnt/data/tg_hhd/hanchen/DATA-Agent_TableQA/data/wikitq/eval/data.jsonl"
-    train_feverous: str = "/mnt/data/tg_hhd/hanchen/DATA-Agent_TableQA/data/feverous/train/data.jsonl"
-    eval_feverous: str = "/mnt/data/tg_hhd/hanchen/DATA-Agent_TableQA/data/feverous/eval/data.jsonl"
-    train_hybridqa: str = "/mnt/data/tg_hhd/hanchen/DATA-Agent_TableQA/data/hybridqa/train/data.jsonl"
-    eval_hybridqa: str = "/mnt/data/tg_hhd/hanchen/DATA-Agent_TableQA/data/hybridqa/eval/data.jsonl"
+    train_wikitq: str = "data/wikitq/train/data.jsonl"
+    eval_wikitq: str = "data/wikitq/eval/data.jsonl"
+    train_feverous: str = "data/feverous/train/data.jsonl"
+    eval_feverous: str = "data/feverous/eval/data.jsonl"
+    train_hybridqa: str = "data/hybridqa/train/data.jsonl"
+    eval_hybridqa: str = "data/hybridqa/eval/data.jsonl"
     tokenizer_name_or_path: str = None
 
 
