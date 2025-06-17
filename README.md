@@ -3,7 +3,7 @@
 ## Policy Optimization is awesome, let’s put a tree on it! 🌲🌟 Exploration gets smarter when it follows the branches. 🌱
 
 
-![Architecture](trainer/MTPO.pdf)
+![Architecture](trainer/MTPO.jpg)
 
 
 For a quick start, set up your environment through this:
