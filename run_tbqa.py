@@ -104,7 +104,7 @@ def get_checkpoint(training_args: MTPOConfig):
     return last_checkpoint
 
 
-def grpo_function(
+def mtpo_function(
     model_args: ModelConfig, script_args: ScriptArguments, training_args: MTPOConfig
 ):
     #########################
@@ -191,7 +191,7 @@ def grpo_function(
 
     # Save everything else on main process
     if trainer.accelerator.is_main_process:
-        trainer.create_model_card({"tags": ["rl","grpo", "tutorial", "philschmid"]})
+        trainer.create_model_card({"tags": ["rl","mtpo", "tutorial", "philschmid"]})
     # push to hub if needed
     if training_args.push_to_hub is True:
         logger.info("Pushing to hub...")
@@ -205,7 +205,7 @@ def main():
     model_args, script_args, training_args = parser.parse_args_and_config()
 
     # Run the main training loop
-    grpo_function(model_args, script_args, training_args)
+    mtpo_function(model_args, script_args, training_args)
 
 
 if __name__ == "__main__":
