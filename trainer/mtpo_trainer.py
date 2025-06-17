@@ -56,7 +56,7 @@ class MTPOTrainer(Trainer):
     """
     MTPOTrainer that uses BFS-like expansions for ReAct steps.
     """
-    _tag_names = ["trl", "grpo"]
+    _tag_names = ["trl", "mtpo"]
 
     def __init__(
         self,
