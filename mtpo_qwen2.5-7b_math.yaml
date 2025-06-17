@@ -7,12 +7,9 @@ bf16: true
 tf32: true
 output_dir: <output_dir>
 
-# Lora Arguments
-# No LoRA is used here
-
 # Training arguments
 epoch: 5
-per_device_train_batch_size: 1
+per_device_train_batch_size: 5
 gradient_accumulation_steps: 1
 gradient_checkpointing: true
 gradient_checkpointing_kwargs:
@@ -20,14 +17,15 @@ gradient_checkpointing_kwargs:
 learning_rate: 5.0e-7 # 1.0e-6 as in the deepseek math paper 5-e7 from https://hijkzzz.notion.site/unraveling-rlhf-and-its-variants-engineering-insights#147d9a33ecc9806090f3d5c749d31f05
 lr_scheduler_type: cosine
 warmup_ratio: 0
-# GRPO specific parameters
-beta: 0.001 # 0.04 as in the deepseek math paper 0.001 from https://hijkzzz.notion.site/unraveling-rlhf-and-its-variants-engineering-insights#147d9a33ecc9806090f3d5c749d31f05
-max_prompt_length: 4096
-max_completion_length: 512
+
+# MTPO
+beta: 0.04 # 0.04 as in the deepseek math paper 0.001 from https://hijkzzz.notion.site/unraveling-rlhf-and-its-variants-engineering-insights#147d9a33ecc9806090f3d5c749d31f05
+max_prompt_length: 16000
+max_completion_length: 1024
 temperature: 0.7
-depth: 4
-breadth: 4
-num_generations: 5
+depth: 8
+breadth: 2
+num_generations: 16
 use_vllm: true
 vllm_device: "auto"
 vllm_gpu_memory_utilization: 0.6
@@ -42,4 +40,3 @@ seed: 1022
 
 # Hugging Face Hub 
 push_to_hub: false
-
