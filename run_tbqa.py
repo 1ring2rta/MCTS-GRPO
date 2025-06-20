@@ -11,7 +11,7 @@ pd.set_option('display.max_rows', 8)
 
 from transformers.trainer_utils import get_last_checkpoint
 from transformers import AutoTokenizer
-from trl import get_peft_config, ModelConfig, TrlParser
+from trl import ModelConfig, TrlParser
 
 from trainer.mtpo_trainer import MTPOTrainer
 from trainer.mtpo_config import MTPOConfig
@@ -151,7 +151,6 @@ def mtpo_function(
       reward_funcs=[wikitq_reward],  # , feverous_reward, hybridqa_reward
       train_dataset=train_dataset,
       eval_dataset=test_dataset,
-      peft_config=get_peft_config(model_args),
     )
 
     ###############
