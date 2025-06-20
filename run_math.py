@@ -17,7 +17,7 @@ import os, torch
 from tools.python_code_interpreter import execute_python_code, description
 
 
-class TableAgent(ReActAgent):
+class CoderAgent(ReActAgent):
     TOOLS = {"execute_python_code": execute_python_code}
     TOOLS_DESCRIPTION = description
 
@@ -132,7 +132,7 @@ def mtpo_function(
     #########################
     trainer = MTPOTrainer(
       model=model_args.model_name_or_path,
-      agent_cls=TableAgent, 
+      agent_cls=CoderAgent, 
       args=training_args,
       reward_funcs=[math_dapo_reward],  # , feverous_reward, hybridqa_reward
       train_dataset=train_dataset,
