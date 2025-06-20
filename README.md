@@ -23,6 +23,7 @@ pip install  --upgrade \
   "trl==0.14.0" \
   "vllm==0.7.0"
 
+pip install graphviz
 pip install openpyxl
 ```
 
