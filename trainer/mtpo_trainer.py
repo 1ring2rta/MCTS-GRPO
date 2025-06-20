@@ -425,193 +425,113 @@ class MTPOTrainer(Trainer):
         agg_leaf: Callable[[List[float]], float] | None = None,
         agg_internal: Callable[[List[float]], float] | None = None,
     ) -> tuple[float, List[List[dict]]]:
-        """
-        After computing per-step rewards, min–max scale inside each prompt bucket,
-        THEN add an artificial root whose reward == avg_acc.  Both a plain-text
-        tree (tmp_tree.txt) and a colour-coded Graphviz tree (tmp_tree.svg/.png)
-        are written to self.args.output_dir.
 
-        Returns
-        -------
-        avg_acc : float
-            Mean reward of the *original* root nodes before normalisation.
-        chains : list[list[dict]]
-            Original chains (each step now includes "reward").
-        """
-
-        # ------------------------------------------------------------------
-        # 0. Configuration
-        # ------------------------------------------------------------------
-        if agg_leaf     is None: agg_leaf     = max
+        if agg_leaf is None:     agg_leaf = max
         if agg_internal is None: agg_internal = lambda xs: sum(xs) / len(xs)
-        GRAPH_FMT = "svg"               # "png" also fine
-        TXT_NAME  = "tmp_tree.txt"
-        IMG_NAME  = f"tmp_tree.{GRAPH_FMT}"
+        GRAPH_FMT, IMG_NAME = "svg", "tmp_tree.svg"
 
-        # ------------------------------------------------------------------
-        # 1. Helpers for the formatting bonus
-        # ------------------------------------------------------------------
-        def total_repeated_chars(s: str) -> int:
-            n = len(s)
-            suf: List[Tuple[str, int]] = [(s[i:], i) for i in range(n)]
-            suf.sort()
-            ivls: List[Tuple[int, int]] = []
+        # ---------- helpers ----------
+        def total_repeat(s: str) -> int:
+            n, suf = len(s), sorted((s[i:], i) for i in range(len(s)))
+            iv = []
             for i in range(n - 1):
                 a, ai = suf[i]
                 b, bi = suf[i + 1]
-                lcp, m = 0, min(len(a), len(b))
-                while lcp < m and a[lcp] == b[lcp]:
+                lcp = 0
+                while lcp < min(len(a), len(b)) and a[lcp] == b[lcp]:
                     lcp += 1
                 if lcp:
-                    ivls += [(ai, ai + lcp), (bi, bi + lcp)]
-            if not ivls:
-                return 0
-            ivls.sort()
-            merged = [list(ivls[0])]
-            for s0, e0 in ivls[1:]:
-                if s0 > merged[-1][1]:
-                    merged.append([s0, e0])
+                    iv += [(ai, ai + lcp), (bi, bi + lcp)]
+            if not iv: return 0
+            iv.sort()
+            m = [list(iv[0])]
+            for s0, e0 in iv[1:]:
+                if s0 > m[-1][1]:
+                    m.append([s0, e0])
                 else:
-                    merged[-1][1] = max(merged[-1][1], e0)
-            return sum(e - s for s, e in merged)
+                    m[-1][1] = max(m[-1][1], e0)
+            return sum(e - s for s, e in m)
 
-        def format_reward_func(completion: str) -> float:
-            """Return 0‒0.5 bonus for well-formed completions."""
-            if total_repeated_chars(completion) > 128:
-                return 0.0
-            if not re.match(r'^STEP-\d+:\r?\n', completion):
-                return 0.0
-            rest = re.sub(r'^STEP-\d+:\r?\n', '', completion, 1)
-            if re.search(r'STEP-\d+:', rest):
-                return 0.0
-            think = re.match(r'<think>.*?</think>', rest, flags=re.DOTALL)
-            if not think:
-                return 0.0
-            remaining = rest[think.end():].strip()
-            if not remaining:
-                return 0.5
-            if re.fullmatch(r'^<answer>.*?</answer>$', remaining, flags=re.DOTALL) or \
-            re.fullmatch(r'^<tool_call>.*?</tool_call>$', remaining, flags=re.DOTALL):
-                return 0.5
-            return 0.0
+        def fmt_bonus(c: str) -> float:
+            if total_repeat(c) > 128:                    return 0.0
+            if not re.match(r'^STEP-\d+:\r?\n', c):      return 0.0
+            rest = re.sub(r'^STEP-\d+:\r?\n', '', c, 1)
+            if re.search(r'STEP-\d+:', rest):            return 0.0
+            think = re.match(r'<think>.*?</think>', rest, re.S)
+            if not think:                                return 0.0
+            remain = rest[think.end():].strip()
+            if not remain:                               return 0.5
+            ok = r'^<answer>.*?</answer>$|^<tool_call>.*?</tool_call>$'
+            return 0.5 if re.fullmatch(ok, remain, re.S) else 0.0
 
-        # ------------------------------------------------------------------
-        # 2. Build the DAG from chains
-        # ------------------------------------------------------------------
-        node_children: dict[int, set[int]] = defaultdict(set)
-        node_parents:  dict[int, int]      = defaultdict(int)
-        id2step:       dict[int, dict]     = {}
-
-        for chain in chains:
-            for i, step in enumerate(chain):
-                sid = id(step)
-                id2step[sid] = step
-                if i + 1 < len(chain):
-                    cid = id(chain[i + 1])
-                    node_children[sid].add(cid)
-                    node_parents[cid] += 1
-
-        original_roots = [sid for sid in id2step if node_parents[sid] == 0]
-
-        # ------------------------------------------------------------------
-        # 3. Bottom-up: raw rewards
-        # ------------------------------------------------------------------
-        from functools import lru_cache
-        @lru_cache(maxsize=None)
-        def dfs_raw(sid: int) -> float:
-            st = id2step[sid]
-            if not node_children[sid]:                      # leaf
-                r = agg_leaf([f(st.get("completions", ""), ground_truth)
-                            for f in reward_funcs])
-            else:                                           # internal
-                r = agg_internal([dfs_raw(c) for c in node_children[sid]])
-            st["reward"] = r
-            return r
-
-        for rid in original_roots:
-            dfs_raw(rid)
-
-        avg_acc = mean(id2step[r]["reward"] for r in original_roots)
-
-        # ------------------------------------------------------------------
-        # 4. Failure penalties + format bonus
-        # ------------------------------------------------------------------
-        for st in id2step.values():
-            if st.get("results") and any("error" in str(r) for r in st["results"]):
-                st["reward"] *= 0.1
-            st["reward"] += format_reward_func(st.get("completions", ""))
-
-        # ------------------------------------------------------------------
-        # 5. Min–max scaling per prompt bucket
-        # ------------------------------------------------------------------
-        buckets: dict[str, list[int]] = defaultdict(list)
-        for sid, st in id2step.items():
-            buckets[st.get("prompt", "<none>")].append(sid)
-
-        for sids in buckets.values():
-            vals = [id2step[s]["reward"] for s in sids]
-            vmin, vmax = min(vals), max(vals)
-            rng = vmax - vmin
-            for s in sids:
-                id2step[s]["reward"] = 0.0 if rng == 0 else (id2step[s]["reward"] - vmin) / rng
-
-        # ------------------------------------------------------------------
-        # 6. Add a synthetic super-root whose reward = avg_acc
-        # ------------------------------------------------------------------
-        super_root = {"reward": avg_acc}
-        super_id = id(super_root)          # guaranteed unique
-        id2step[super_id] = super_root
-        node_children[super_id] = set(original_roots)   # link every old root
-        for rid in original_roots:                       # mark parent count
-            node_parents[rid] += 1
-
-        root_ids = [super_id]                           # now exactly one root
-
-        # ------------------------------------------------------------------
-        # 7. Render plain-text tree
-        # ------------------------------------------------------------------
-        def _txt(sid: int, d: int = 0) -> str:
-            line = f'{"  " * d}- depth={d} reward={id2step[sid]["reward"]:.4f}\n'
-            for cid in node_children[sid]:
-                line += _txt(cid, d + 1)
-            return line
-
-        with open(os.path.join(self.args.output_dir, TXT_NAME), "w", encoding="utf-8") as f:
-            f.write(_txt(super_id))
-
-        # ------------------------------------------------------------------
-        # 8. Graphviz with green gradient
-        # ------------------------------------------------------------------
-        def _interp_green(val: float) -> str:
-            """Linear interpolate light → dark green, clamp to [0,1]."""
-            val = max(0.0, min(1.0, val))
-            light = (0xE0, 0xFF, 0xE0)      # #E0FFE0
-            dark  = (0x00, 0x64, 0x00)      # #006400
-            rgb = tuple(int(l + val * (d - l)) for l, d in zip(light, dark))
+        def green(val: float) -> str:
+            val = max(0, min(1, val))
+            lg, dg = (0xE0, 0xFF, 0xE0), (0x00, 0x64, 0x00)
+            rgb = [int(l + val * (d - l)) for l, d in zip(lg, dg)]
             return f'#{rgb[0]:02X}{rgb[1]:02X}{rgb[2]:02X}'
 
-        def _render_gv():
-            dot = Digraph(format=GRAPH_FMT)
-            dot.attr(rankdir="TB")
+        # ---------- build DAG ----------
+        ch, par, id2 = defaultdict(set), defaultdict(int), {}
+        for chain in chains:
+            for i, st in enumerate(chain):
+                sid = id(st); id2[sid] = st
+                if i + 1 < len(chain):
+                    cid = id(chain[i + 1])
+                    ch[sid].add(cid); par[cid] += 1
+        roots = [sid for sid in id2 if par[sid] == 0]
+
+        # ---------- raw rewards ----------
+        from functools import lru_cache
+        @lru_cache(None)
+        def dfs(sid: int) -> float:
+            st = id2[sid]
+            if not ch[sid]:
+                r = agg_leaf([f(st.get("completions", ""), ground_truth)
+                            for f in reward_funcs])
+            else:
+                r = agg_internal([dfs(c) for c in ch[sid]])
+            st["reward"] = r
+            return r
+        for r in roots: dfs(r)
+
+        avg_acc = mean(id2[r]["reward"] for r in roots)
+
+        # ---------- min–max by prompt ----------
+        bucket = defaultdict(list)
+        for sid, st in id2.items():
+            bucket[st.get("prompt", "<none>")].append(sid)
+        for sids in bucket.values():
+            vs = [id2[s]["reward"] for s in sids]
+            vmin, vmax = min(vs), max(vs); rng = vmax - vmin
+            for s in sids:
+                id2[s]["reward"] = id2[s]["reward"] if rng == 0 \
+                                else (id2[s]["reward"] - vmin) / rng
+
+        # ---------- add super root ----------
+        super_root = {"reward": avg_acc}
+        super_id = id(super_root)
+        id2[super_id] = super_root
+        ch[super_id] = set(roots)
+        roots = [super_id]
+
+        # ---------- early render BEFORE penalties ----------
+        def render_graph(path_prefix: str):
+            dot = Digraph(format=GRAPH_FMT); dot.attr(rankdir="TB")
             dot.attr('node', shape='box', style='filled', fontsize="10")
+            for sid, st in id2.items():
+                v = st["reward"]; dot.node(str(sid), f"{v:.2f}", fillcolor=green(v))
+            for p, cs in ch.items():
+                for c in cs: dot.edge(str(p), str(c))
+            dot.render(path_prefix, directory=self.args.output_dir, cleanup=True)
+            
+        render_graph(IMG_NAME.rsplit(".", 1)[0])  # writes tmp_tree.svg
 
-            for sid, st in id2step.items():
-                v = st["reward"]
-                dot.node(str(sid),
-                        label=f"{v:.2f}",
-                        fillcolor=_interp_green(v))
+        # ---------- penalties + bonus ----------
+        for st in id2.values():
+            if st.get("results") and any("error" in str(r) for r in st["results"]):
+                st["reward"] *= 0.1
+            st["reward"] += fmt_bonus(st.get("completions", ""))
 
-            for pid, cids in node_children.items():
-                for cid in cids:
-                    dot.edge(str(pid), str(cid))
-
-            dot.render(filename=IMG_NAME.rsplit(".", 1)[0],
-                    directory=self.args.output_dir,
-                    cleanup=True)
-        try:
-            _render_gv()
-        except Exception as e:
-            print(f"[compute_action_rewards] Graphviz render failed: {e}")
         return avg_acc, chains
     
     def llm_self_judge(self, model_output, ground_truth):
