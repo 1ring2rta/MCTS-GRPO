@@ -3,7 +3,7 @@
 ## GRPO is awesome, let’s put a tree on it! 🌲🌟 Exploration gets smarter when it follows the branches. 🌱
 
 
-![Architecture](trainer/MTPO.jpg)
+![Architecture](imgs/MTPO.jpg)
 
 
 For a quick start, set up your environment through this:
@@ -28,7 +28,7 @@ pip install openpyxl
 ```
 
 
-![Qwen2.5-7B, Trained on WikiTQ](trainer/screenshots.png)
+![Qwen2.5-7B, Trained on WikiTQ](imgs/on_wikitq.png)
 
 
 | Task         | Dataset       | Qwen2.5-7B-Instruct | MCTS+GRPO  |
@@ -41,7 +41,12 @@ pip install openpyxl
 
 
 ## Math Example
-
+step3:
+![step3](imgs/tmp_tree_step3.svg)
+step6:
+![step6](imgs/tmp_tree_step6.svg)
+step9:
+![step9](imgs/tmp_tree_step9.svg)
 ```text
 ╭─────────────────────────────────── PROMPT ───────────────────────────────────╮
 │ # User Question:                                                             │
