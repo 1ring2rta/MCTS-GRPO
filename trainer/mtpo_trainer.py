@@ -535,12 +535,13 @@ class MTPOTrainer(Trainer):
         return avg_acc, chains
     
     def llm_self_judge(self, model_output, ground_truth):
-        if str(ground_truth) not in model_output:
-            return 0.0
-
         matches = re.findall(r'<answer>(.*?)</answer>', model_output)
         if matches:
             model_output = matches[-1]
+            if str(ground_truth) not in model_output:
+                return 0.0
+            elif str(ground_truth) == model_output:
+                return 1.0
         else:
             return 0.0
 
