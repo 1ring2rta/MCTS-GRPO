@@ -47,6 +47,12 @@ step6:
 ![step6](imgs/tmp_tree_step6.svg)
 step9:
 ![step9](imgs/tmp_tree_step9.svg)
+step100:
+![step100](imgs/tmp_tree_step100.svg)
+step200:
+![step200](imgs/tmp_tree_step200.svg)
+
+
 ```text
 ╭─────────────────────────────────── PROMPT ───────────────────────────────────╮
 │ # User Question:                                                             │
